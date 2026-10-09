@@ -1,0 +1,93 @@
+# Chael SIEM - Multi-Node Cluster Configuration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cluster.yml up -d
+#
+# This adds:
+# - 3-node OpenSearch cluster (master/data nodes)
+# - 3-node Redis Sentinel for HA
+# - Nginx load balancer for frontend
+#
+# Requirements:
+# - At least 16GB RAM on each node
+# - Docker Swarm or separate machines with shared network
+# - Update OPENSEARCH_HOSTS in .env for each node
+
+services:
+  # --- OpenSearch Cluster (add 2 more nodes) ---
+  opensearch-node2:
+    image: opensearchproject/opensearch:2.12.0
+    container_name: chaelsiem-opensearch-node2
+    restart: unless-stopped
+    environment:
+      - discovery.type=zen
+      - discovery.seed_hosts=opensearch,opensearch-node2,opensearch-node3
+      - cluster.initial_cluster_manager_nodes=opensearch,opensearch-node2,opensearch-node3
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD}
+      - node.name=opensearch-node2
+      - cluster.name=chaelsiem-cluster
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch-data-node2:/usr/share/opensearch/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -k https://localhost:9200/_cluster/health -u admin:${OPENSEARCH_PASSWORD} || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  opensearch-node3:
+    image: opensearchproject/opensearch:2.12.0
+    container_name: chaelsiem-opensearch-node3
+    restart: unless-stopped
+    environment:
+      - discovery.type=zen
+      - discovery.seed_hosts=opensearch,opensearch-node2,opensearch-node3
+      - cluster.initial_cluster_manager_nodes=opensearch,opensearch-node2,opensearch-node3
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD}
+      - node.name=opensearch-node3
+      - cluster.name=chaelsiem-cluster
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch-data-node3:/usr/share/opensearch/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -k https://localhost:9200/_cluster/health -u admin:${OPENSEARCH_PASSWORD} || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  # --- Redis Sentinel for HA ---
+  redis-sentinel1:
+    image: redis:latest
+    container_name: chaelsiem-redis-sentinel1
+    restart: unless-stopped
+    command: redis-server --sentinel on --sentinel monitor chaelsiem-master redis 6379 2 --sentinel down-after-milliseconds 5000 --sentinel failover-timeout 10000
+    depends_on:
+      - redis
+    networks:
+      - internal
+
+  redis-sentinel2:
+    image: redis:latest
+    container_name: chaelsiem-redis-sentinel2
+    restart: unless-stopped
+    command: redis-server --sentinel on --sentinel monitor chaelsiem-master redis 6379 2 --sentinel down-after-milliseconds 5000 --sentinel failover-timeout 10000
+    depends_on:
+      - redis
+    networks:
+      - internal
+
+volumes:
+  opensearch-data-node2:
+  opensearch-data-node3:

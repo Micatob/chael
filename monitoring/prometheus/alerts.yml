@@ -1,0 +1,66 @@
+groups:
+  - name: chael_siem_alerts
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been unreachable for more than 1 minute."
+
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency on {{ $labels.job }}"
+          description: "{{ $labels.job }} has P95 latency > 5s for 5 minutes."
+
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "Error rate > 5% for 5 minutes on {{ $labels.job }}"
+
+      - alert: ServiceInstanceDown
+        expr: count by (job) (up == 0) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Multiple service instances down"
+          description: "{{ $value }} service instances are down."
+
+      - alert: HighRequestRate
+        expr: sum(rate(http_requests_total[1m])) > 1000
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "High request rate"
+          description: "Total request rate > 1000 req/s for 5 minutes"
+
+      - alert: LogIngestionHighTraffic
+        expr: sum(rate(http_requests_total{job="log-ingestion-service"}[1m])) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High log ingestion traffic"
+          description: "Log ingestion > 500 req/s"
+
+      - alert: OpenSearchClusterHealth
+        expr: absent(up{job="opensearch"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenSearch cluster health check failed"
+          description: "Cannot reach OpenSearch cluster"

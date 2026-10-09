@@ -1,0 +1,220 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Chael SIEM — Central Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Agent Registration ─────────────────────────────────────────────────────
+agent_registration:
+  primary_method: "mtls"              # "mtls" or "api_key"
+  mtls_ca_valid_days: 3650
+  mtls_cert_valid_days: 365
+  mtls_key_size: 2048
+  api_key_length: 32                  # bytes
+  api_key_hash_iterations: 100000
+  heartbeat_interval_seconds: 60
+  heartbeat_timeout_seconds: 120      # agent marked offline after N seconds
+  rate_limit_per_minute: 10           # registration attempts per IP
+  deregistration_cleanup_days: 90     # keep records after deregs
+
+# ── Stage A — Pre-filtering (at the agent, before shipping) ───────────────
+pre_filtering:
+  enabled: true
+  # Only watch these log sources. Empty = watch all.
+  whitelist_sources:
+    - "auth.log"
+    - "syslog"
+    - "auditd"
+    - "secure"
+    - "messages"
+    - "kern.log"
+    - "Windows:Security"
+    - "Windows:PowerShell"
+    - "Windows:Sysmon"
+    - "Windows:Defender"
+    - "journald:sshd"
+    - "journald:sudo"
+    - "journald:audit"
+    - "nginx/access.log"
+    - "nginx/error.log"
+    - "apache2/access.log"
+    - "apache2/error.log"
+
+  # Regex patterns — messages matching these are ALWAYS forwarded
+  allowlist_patterns:
+    - "(?i)(failed|invalid|error|critical|emerg|denied|reject)"
+    - "(?i)(sudo|su|root)"
+    - "(?i)(4625|4740|1102|4719|4688|4697|7045|4672)"
+    - "(?i)(nmap|masscan|sqlmap|nikto|gobuster)"
+    - "(?i)(mimikatz|cobaltstrike|meterpreter)"
+    - "(?i)(authentication failure|connection refused)"
+    - "(?i)(policy violation|access violation)"
+    - "(?i)(service installed|scheduled task)"
+    - "(?i)(registry modification|run key)"
+    - "(?i)(kernel panic|segfault|oom-killer)"
+
+  # Regex patterns — messages matching these are NEVER forwarded (noise)
+  blocklist_patterns:
+    - "(?i)(successful sudo|COMMAND=.*(ls|cat|grep|find|whoami|id|pwd|date))"
+    - "(?i)(session opened for user|session closed for user)"
+    - "(?i)(time offset|clock skew)"
+    - "(?i)(new address.*configured on)"
+    - "(?i)(link becomes ready|link UP|link DOWN)"
+    - "(?i)(connection from.*port.*accepted)"
+    - "(?i)(status=0/SUCCESS|exited with status 0)"
+    - "(?i)(cron.*CMD.*(php|python|bash|sh|perl))"
+    - "(?i)(systemd.*Started|systemd.*Stopped|systemd.*Starting)"
+    - "(?i)(successful logon.*logon type 5)"  # service logons
+    - "(?i)(DNS.*query successful)"
+    - "(?i)(DHCP.*acknowledged)"
+    - "(?i)(NTP.*sync)"
+    - "(?i)(HTTP 200)"
+    - "(?i)(heartbeat|keepalive)"
+
+  # Windows Event IDs to watch (whitelist); empty = all
+  windows_event_ids:
+    - 4624   # Successful logon (forensics)
+    - 4625   # Failed logon
+    - 4634   # Logoff
+    - 4648   # Explicit credential logon
+    - 4672   # Special privileges
+    - 4673   # Privileged service
+    - 4688   # Process creation
+    - 4697   # Service installation
+    - 4698   # Scheduled task
+    - 4702   # Scheduled task updated
+    - 4719   # Audit policy changed
+    - 4720   # User created
+    - 4728   # Member added to group
+    - 4732   # Member added to local group
+    - 4740   # Account locked out
+    - 4768   # Kerberos TGT
+    - 4769   # Kerberos service ticket
+    - 4776   # Credential validation
+    - 1102   # Log cleared
+    - 4103   # PowerShell pipeline
+    - 4104   # PowerShell script block
+    - 5156   # Connection allowed
+    - 7045   # Service installed
+
+# ── Stage B — Correlation-based Filtering ──────────────────────────────────
+correlation_filtering:
+  ssh_brute_force:
+    single_failure: "drop"             # < 5 failures = not stored
+    medium_threshold: 5
+    medium_window_seconds: 60
+    high_threshold: 15
+    high_window_seconds: 300
+    track_per_ip: true
+
+  ssh_password_spray:
+    threshold: 20
+    window_seconds: 300
+    track_per_ip: true
+
+  firewall_block:
+    single_block: "drop"               # < 10 = not stored
+    threshold: 10
+    window_seconds: 60
+    track_per_source_ip: true
+
+  service_install_and_port:
+    enabled: true
+    window_seconds: 600
+    require_port_change: true
+
+  off_hours_admin:
+    enabled: true
+    business_hours_start: "08:00"
+    business_hours_end: "18:00"
+    business_days: [1, 2, 3, 4, 5]    # 0=Sun, 6=Sat
+    unusual_geo_km: 500                # distance from known locations
+
+  cross_service_brute_force:
+    enabled: true
+    services: ["ssh", "ftp", "http", "smtp", "rdp"]
+    threshold_total: 10
+    window_seconds: 120
+
+  impossible_travel:
+    enabled: true
+    min_distance_km: 1000
+    max_time_minutes: 60
+
+# ── Stage C — Dedup & Alert Fatigue Prevention ────────────────────────────
+alert_fatigue_prevention:
+  cooldown_seconds: 300                 # same alert from same source suppressed
+  max_alerts_per_source_per_hour: 50
+  aggregate_alerts: true               # "342 attempts from 12 IPs" vs 342 alerts
+
+  false_positive_elimination:
+    whitelisted_ips:
+      - "127.0.0.1"
+      - "::1"
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+    whitelisted_scanner_ips: []        # internal vuln scanners
+    maintenance_windows: []            # e.g. "Mon 02:00-04:00"
+    ignore_localhost_for_port_scan: true
+    baseline_learning_days: 1
+
+# ── Log Retention ──────────────────────────────────────────────────────────
+log_retention:
+  hot_days: 7
+  warm_days: 30
+  cold_days: 365
+  auto_prune_enabled: true
+  prune_interval_hours: 24
+
+# ── Alert Channels ─────────────────────────────────────────────────────────
+alert_channels:
+  email:
+    enabled: false
+    smtp_host: ""
+    smtp_port: 587
+    smtp_tls: true
+    smtp_user: ""
+    smtp_password: ""
+    from_addr: "siem@chael.local"
+    to_addrs: []
+  slack:
+    enabled: false
+    webhook_url: ""
+  discord:
+    enabled: false
+    webhook_url: ""
+  syslog_forward:
+    enabled: false
+    host: ""
+    port: 514
+    protocol: "udp"  # udp or tcp
+
+# ── Escalation ─────────────────────────────────────────────────────────────
+escalation:
+  enabled: true
+  tiers:
+    - name: "SOC Analyst L1"
+      ack_timeout_minutes: 15
+      max_risk_score: 70
+    - name: "SOC Analyst L2"
+      ack_timeout_minutes: 10
+      max_risk_score: 85
+    - name: "SOC Lead"
+      ack_timeout_minutes: 5
+      max_risk_score: 100
+
+# ── GeoIP ──────────────────────────────────────────────────────────────────
+geoip:
+  enabled: false
+  database_path: "/data/GeoLite2-City.mmdb"
+  auto_update: true
+
+# ── Reporting ──────────────────────────────────────────────────────────────
+reporting:
+  daily_summary:
+    enabled: true
+    time: "08:00"
+  weekly_report:
+    enabled: true
+    day: 1  # 0=Sun, 6=Sat
+    time: "09:00"
+  export_formats: ["pdf", "csv"]

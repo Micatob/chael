@@ -1,0 +1,100 @@
+{
+  "title": "Chael SIEM — Service Overview",
+  "uid": "chael-siem-overview",
+  "version": 1,
+  "schemaVersion": 36,
+  "panels": [
+    {
+      "title": "HTTP Request Rate (last 5m)",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 4, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum(rate(http_requests_total{job=\"log-ingestion-service\"}[5m]))", "legendFormat": "Ingestion"},
+        {"expr": "sum(rate(http_requests_total{job=\"identity-service\"}[5m]))", "legendFormat": "Identity"},
+        {"expr": "sum(rate(http_requests_total{job=\"correlation-service\"}[5m]))", "legendFormat": "Correlation"},
+        {"expr": "sum(rate(http_requests_total{job=\"incident-management-service\"}[5m]))", "legendFormat": "Incidents"},
+        {"expr": "sum(rate(http_requests_total{job=\"soar-service\"}[5m]))", "legendFormat": "SOAR"},
+        {"expr": "sum(rate(http_requests_total{job=\"threat-feed\"}[5m]))", "legendFormat": "Threat Feed"},
+        {"expr": "sum(rate(http_requests_total{job=\"ml-analytics-service\"}[5m]))", "legendFormat": "ML Analytics"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "color": {"mode": "palette-classic"}
+        }
+      }
+    },
+    {
+      "title": "P95 Request Duration (last 5m)",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 4, "x": 4, "y": 0},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"log-ingestion-service\"}[5m])) by (le))", "legendFormat": "Ingestion"},
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"identity-service\"}[5m])) by (le))", "legendFormat": "Identity"},
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"correlation-service\"}[5m])) by (le))", "legendFormat": "Correlation"},
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"incident-management-service\"}[5m])) by (le))", "legendFormat": "Incidents"},
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"soar-service\"}[5m])) by (le))", "legendFormat": "SOAR"},
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"threat-feed\"}[5m])) by (le))", "legendFormat": "Threat Feed"},
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"ml-analytics-service\"}[5m])) by (le))", "legendFormat": "ML Analytics"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {"mode": "palette-classic"}
+        }
+      }
+    },
+    {
+      "title": "Active Requests",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 4, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "sum(http_requests_in_progress{job=\"log-ingestion-service\"})", "legendFormat": "Ingestion"},
+        {"expr": "sum(http_requests_in_progress{job=\"identity-service\"})", "legendFormat": "Identity"},
+        {"expr": "sum(http_requests_in_progress{job=\"correlation-service\"})", "legendFormat": "Correlation"},
+        {"expr": "sum(http_requests_in_progress{job=\"incident-management-service\"})", "legendFormat": "Incidents"},
+        {"expr": "sum(http_requests_in_progress{job=\"soar-service\"})", "legendFormat": "SOAR"},
+        {"expr": "sum(http_requests_in_progress{job=\"threat-feed\"})", "legendFormat": "Threat Feed"},
+        {"expr": "sum(http_requests_in_progress{job=\"ml-analytics-service\"})", "legendFormat": "ML Analytics"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"}
+        }
+      }
+    },
+    {
+      "title": "Request Rate by Service",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "rate(http_requests_total[1m])", "legendFormat": "{{job}}"}
+      ]
+    },
+    {
+      "title": "P95 Latency by Service",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, job))", "legendFormat": "{{job}}"}
+      ]
+    },
+    {
+      "title": "HTTP Status Breakdown",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "sum(rate(http_requests_total[5m])) by (status)"}
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "right"}, "pieType": "pie"}
+    },
+    {
+      "title": "Total Requests (cumulative)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {"expr": "sum(http_requests_total) by (job)", "legendFormat": "{{job}}"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+.env
+*.db
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+frontend/dist/
+data/
+archive_data/
+logs/
+.vscode/
+.opencode/
+opencode-backup-*.json
+SESSION.md
+STATE.md

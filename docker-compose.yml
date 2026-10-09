@@ -1,0 +1,368 @@
+services:
+  # --- API GATEWAY & IDENTITY ---
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health | grep -q healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+      - ./services/agent:/opt/chael/agent-files:ro
+    depends_on:
+      - identity-service
+      - log-ingestion-service
+      - incident-management-service
+      - soar-service
+    networks:
+      - internal
+
+  identity-service:
+    build:
+      context: ./services/identity-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - API_PORT=8004
+      - JWT_SECRET=${JWT_SECRET}
+      - AGENT_DB_PATH=/data/agents.db
+      - APPROVER_USERNAME=${APPROVER_USERNAME:-}
+      - APPROVER_PASSWORD=${APPROVER_PASSWORD:-}
+      - ANALYST_USERNAME=${ANALYST_USERNAME:-}
+      - ANALYST_PASSWORD=${ANALYST_PASSWORD:-}
+    volumes:
+      - identity-data:/data
+      - ./certs:/etc/chael/certs:ro
+      - ./config.yaml:/etc/chael/config.yaml:ro
+    networks:
+      - internal
+
+  # --- CORE MICROSERVICES ---
+  log-ingestion-service:
+    build:
+      context: ./services/log-ingestion-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - API_PORT=8080
+      - OPENSEARCH_HOST=opensearch
+      - REDIS_HOST=redis
+    depends_on:
+      - opensearch
+      - redis
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  correlation-service:
+    build:
+      context: ./services/correlation-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_PORT=8081
+      - OPENSEARCH_HOST=opensearch
+      - REDIS_HOST=redis
+    depends_on:
+      - opensearch
+      - redis
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  incident-management-service:
+    build:
+      context: ./services/incident-management-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_PORT=8082
+      - OPENSEARCH_HOST=opensearch
+      - SOAR_SERVICE_URL=http://soar-service:8083
+      - IDENTITY_SERVICE_URL=http://identity-service:8004
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - VT_API_KEY=${VT_API_KEY}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
+      - SHODAN_API_KEY=${SHODAN_API_KEY}
+      - OTX_API_KEY=${OTX_API_KEY}
+      - GREYNOISE_API_KEY=${GREYNOISE_API_KEY}
+      - IPINFO_API_KEY=${IPINFO_API_KEY}
+    depends_on:
+      - opensearch
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  soar-service:
+    build:
+      context: ./services/soar-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - API_PORT=8083
+      - OPENSEARCH_HOST=opensearch
+      - REDIS_HOST=redis
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - SOAR_REDIS_ENABLED=true
+    depends_on:
+      - opensearch
+      - redis
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  # --- ANALYTICS & INTEL ---
+  ml-analytics-service:
+    build:
+      context: ./services/ml-analytics-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_PORT=8084
+      - OPENSEARCH_HOST=opensearch
+      - REDIS_HOST=redis
+      - INCIDENT_SERVICE_URL=http://incident-management-service:8082
+      - POLL_INTERVAL_MINUTES=15
+    depends_on:
+      - opensearch
+      - redis
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  threat-feed:
+    build:
+      context: ./services/threat-feed
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_PORT=8090
+      - OPENSEARCH_HOST=opensearch
+      - OTX_API_KEY=${OTX_API_KEY}
+      - POLL_INTERVAL_MINUTES=60
+    depends_on:
+      - opensearch
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  flow-collector:
+    build:
+      context: ./services/flow-collector
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "2055:2055/udp"
+    environment:
+      - API_PORT=8085
+      - OPENSEARCH_HOST=opensearch
+      - NETFLOW_PORT=2055
+    depends_on:
+      - opensearch
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  sigma-converter:
+    build:
+      context: ./services/sigma-converter
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_PORT=8091
+      - OPENSEARCH_HOST=opensearch
+      - CORRELATION_SERVICE_URL=http://correlation-service:8081
+    depends_on:
+      - opensearch
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  data-archiver:
+    build:
+      context: ./services/data-archiver
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - OPENSEARCH_HOST=opensearch
+      - ARCHIVE_RETENTION_DAYS=30
+      - ARCHIVE_DIR=/archive
+      - ARCHIVE_SCHEDULE_CRON=0 2 * * *
+      - API_PORT=8092
+      - DIGEST_ENABLED=${DIGEST_ENABLED:-true}
+      - "DIGEST_DAILY_CRON=${DIGEST_DAILY_CRON:-0 8 * * *}"
+      - "DIGEST_WEEKLY_CRON=${DIGEST_WEEKLY_CRON:-0 9 * * 1}"
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-siem@chael.local}
+      - SMTP_TO=${SMTP_TO:-}
+      - SMTP_TLS=${SMTP_TLS:-true}
+    volumes:
+      - ./archive_data:/archive
+    depends_on:
+      - opensearch
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  ai-assistant-service:
+    build:
+      context: ./services/ai-assistant-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - API_PORT=8093
+      - OPENSEARCH_HOST=opensearch
+      - REDIS_HOST=redis
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-qwen/qwen3.8-27b}
+      - GROQ_MODELS=${GROQ_MODELS:-qwen/qwen3.8-27b,openai/gpt-oss-20b,groq/compound-mini}
+      - GROQ_TIMEOUT_S=${GROQ_TIMEOUT_S:-30}
+      - GROQ_MAX_TOKENS=${GROQ_MAX_TOKENS:-1500}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_BASE_URL=${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
+      - GEMINI_MODELS=${GEMINI_MODELS:-gemini-2.5-flash,gemini-2.0-flash}
+      - GEMINI_TIMEOUT_S=${GEMINI_TIMEOUT_S:-30}
+      - GEMINI_MAX_TOKENS=${GEMINI_MAX_TOKENS:-1500}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODELS=${OPENROUTER_MODELS:-meta-llama/llama-3.3-70b-instruct,deepseek/deepseek-chat,qwen/qwen-2.5-72b-instruct}
+      - AI_PROVIDER_ORDER=${AI_PROVIDER_ORDER:-groq,openrouter}
+      - AI_TIMEOUT_S=${AI_TIMEOUT_S:-30}
+      - AI_KEY_COOLDOWN_S=${AI_KEY_COOLDOWN_S:-300}
+      - AI_ENABLED=${AI_ENABLED:-false}
+      - IDENTITY_SERVICE_URL=http://identity-service:8004
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - INCIDENT_SERVICE_URL=http://incident-management-service:8082
+    depends_on:
+      - opensearch
+      - redis
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  # --- FRONTEND ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # --- INFRASTRUCTURE ---
+  opensearch:
+    image: opensearchproject/opensearch:2.12.0
+    container_name: chaelsiem-opensearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD}
+      - cluster.name=chaelsiem-cluster
+      - node.name=opensearch
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -k https://localhost:9200/_cluster/health -u admin:${OPENSEARCH_PASSWORD:-ChaelSIEMStrongPass1!} || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- OBSERVABILITY ---
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: chaelsiem-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    networks:
+      - internal
+
+  # --- AGENT (run with: docker compose --profile agent up agent) ---
+  agent:
+    build: ./services/agent
+    container_name: chaelsiem-agent
+    environment:
+      - CHAEL_SIEM_URL=https://gateway:8443
+      - AGENT_MODE=tail
+    volumes:
+      - ./logs:/var/log/hosts:ro
+    depends_on:
+      - gateway
+    networks:
+      - internal
+    profiles:
+      - agent
+    restart: unless-stopped
+
+volumes:
+  opensearch-data:
+  redis-data:
+  identity-data:
+  prometheus-data:
+networks:
+  internal:

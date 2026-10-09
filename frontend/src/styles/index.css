@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border border-cyber-border;
+  }
+  body {
+    @apply bg-cyber-bg text-gray-100;
+  }
+  ::selection {
+    @apply bg-cyber-accent text-cyber-bg;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-cyber-surface/80 backdrop-blur-md border border-cyber-border rounded-lg shadow-xl;
+  }
+  .severity-badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .severity-critical {
+    @apply severity-badge bg-severity-CRITICAL/20 text-severity-CRITICAL border border-severity-CRITICAL/50;
+  }
+  .severity-high {
+    @apply severity-badge bg-severity-HIGH/20 text-severity-HIGH border border-severity-HIGH/50;
+  }
+  .severity-medium {
+    @apply severity-badge bg-severity-MEDIUM/20 text-severity-MEDIUM border border-severity-MEDIUM/50;
+  }
+  .severity-low {
+    @apply severity-badge bg-severity-LOW/20 text-severity-LOW border border-severity-LOW/50;
+  }
+  .cyber-button {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 
+           bg-cyber-accent text-cyber-bg hover:bg-cyber-accent/90 
+           focus:outline-none focus:ring-2 focus:ring-cyber-accent focus:ring-offset-2 focus:ring-offset-cyber-bg;
+  }
+  .cyber-input {
+    @apply w-full px-4 py-2 rounded-lg bg-cyber-surface border border-cyber-border 
+           text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 
+           focus:ring-cyber-accent focus:border-cyber-accent;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-cyber-surface;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-cyber-muted rounded-full;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-cyber-border;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(16, 185, 129, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(16, 185, 129, 0.6); }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}

@@ -1,0 +1,5 @@
+opensearch-py==2.4.2
+apscheduler==3.10.4
+fastapi>=0.100.0
+uvicorn>=0.22.0
+prometheus-client

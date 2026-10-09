@@ -1,0 +1,124 @@
+{
+  "title": "Chael SIEM — Security Overview",
+  "uid": "chael-siem-security",
+  "version": 1,
+  "schemaVersion": 36,
+  "panels": [
+    {
+      "title": "Total Alerts (24h)",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 3, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum(increase(http_requests_total{job=~\"incident-management-service|soar-service\",status=~\"2..\"}[24h]))", "legendFormat": "Alerts"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 1000}]}
+        }
+      }
+    },
+    {
+      "title": "Active Incidents",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 3, "x": 3, "y": 0},
+      "targets": [
+        {"expr": "sum(http_requests_in_progress{job=\"incident-management-service\"})", "legendFormat": "Active"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 50}]}
+        }
+      }
+    },
+    {
+      "title": "SOAR Actions (24h)",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 3, "x": 6, "y": 0},
+      "targets": [
+        {"expr": "sum(increase(http_requests_total{job=\"soar-service\"}[24h]))", "legendFormat": "Actions"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 200}]}
+        }
+      }
+    },
+    {
+      "title": "Log Ingestion Rate",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 3, "x": 9, "y": 0},
+      "targets": [
+        {"expr": "sum(rate(http_requests_total{job=\"log-ingestion-service\"}[5m]))", "legendFormat": "eps"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "eps",
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 500}]}
+        }
+      }
+    },
+    {
+      "title": "Log Ingestion Rate (5m)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "rate(http_requests_total{job=\"log-ingestion-service\"}[1m])", "legendFormat": "rps"}
+      ]
+    },
+    {
+      "title": "Log Ingestion P95 Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"log-ingestion-service\"}[1m])) by (le))", "legendFormat": "p95"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "Incident Management Activity",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "rate(http_requests_total{job=\"incident-management-service\"}[1m])", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "title": "SOAR Activity",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {"expr": "rate(http_requests_total{job=\"soar-service\"}[1m])", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "title": "Service Health",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "up", "legendFormat": "{{job}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "title": "Error Rate by Service",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {"expr": "rate(http_requests_total{status=~\"5..\"}[5m])", "legendFormat": "{{job}} - {{status}}"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+- [x] 2026-09-25: SOAR approval gate (isolate/indefinite-block wait for human), reject + global queue + actor audit — DONE + deployed
+- [x] 2026-09-25: Dashboard agent-heartbeat chart + live WS/polling, Agents heartbeat history — DONE + deployed
+- [x] 2026-09-25: Reporting (dashboard summary PDF, logs CSV/JSON, SOAR CSV, EMAIL channel) + Refresh fixes — DONE + deployed
+- [x] 2026-09-25: Agent heartbeat auto-recovery — agent key preservation on re-register, mark-online endpoint, reconnect loop calls mark-online — DONE + deployed (identity-service rebuilt)
+- [ ] PENDING (box hot at save: CPU 100%, ~700MB free RAM): frontend rebuild for Mark Online button — code done, tsc clean; run `npm run build` + host-net buildx + `--force-recreate frontend` when cool
+- [ ] Restart endpoint agent to auto-register fresh (agents list currently empty after purge of stale `test` agent + probe cleanup)
+- [ ] Optional: rebuild `chael-agent` image (agent.py re-register-on-stale-credentials fix ships via endpoint deploy scripts)
+- [ ] Redeploy agent on a live endpoint, delete stale offline `test` agent (user action)
+- [ ] Rotate Groq + AbuseIPDB keys (appeared in chat history) → `.env` → `docker compose up -d --no-build --force-recreate ai-assistant-service incident-management-service` (user action)
+
+### Nice to Have
+Thought · 68ms
+Session saved. What's recorded for next time:
+Live: identity-service with key preservation + mark-online (verified), DB migrated, agents list empty.
+Pending (needs cool box): frontend npm run build + rebuild + recreate for the Mark Online button.
+Pending (your action): restart the endpoint agent so it auto-registers fresh.
+Restart whenever ready — just say continue and I'll pick up from the frontend rebuild.

@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+pydantic
+slowapi>=0.1.9
+opensearch-py>=2.0.0
+prometheus-client
+cryptography>=41.0.0

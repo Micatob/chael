@@ -1,0 +1,55 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  - job_name: "identity-service"
+    static_configs:
+      - targets: ["identity-service:8004"]
+
+  - job_name: "log-ingestion-service"
+    static_configs:
+      - targets: ["log-ingestion-service:8080"]
+
+  - job_name: "correlation-service"
+    static_configs:
+      - targets: ["correlation-service:8081"]
+
+  - job_name: "incident-management-service"
+    static_configs:
+      - targets: ["incident-management-service:8082"]
+
+  - job_name: "soar-service"
+    static_configs:
+      - targets: ["soar-service:8083"]
+
+  - job_name: "ml-analytics-service"
+    static_configs:
+      - targets: ["ml-analytics-service:8084"]
+
+  - job_name: "sigma-converter"
+    static_configs:
+      - targets: ["sigma-converter:8091"]
+
+  - job_name: "threat-feed"
+    static_configs:
+      - targets: ["threat-feed:8090"]
+
+  - job_name: "flow-collector"
+    static_configs:
+      - targets: ["flow-collector:8085"]
+
+  - job_name: "data-archiver"
+    static_configs:
+      - targets: ["data-archiver:8092"]
+
+  - job_name: "ai-assistant-service"
+    static_configs:
+      - targets: ["ai-assistant-service:8093"]
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
