@@ -1,2 +1,0 @@
-﻿DONE 2026-09-20 - images rebuilt via host-network buildx. Future rebuilds use:
-docker buildx build --allow network.host --network host -f services<SVC>Dockerfile -t chael<SVC> services<SVC>
