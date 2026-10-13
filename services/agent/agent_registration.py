@@ -123,15 +123,43 @@ def get_public_key_pem() -> Optional[str]:
 
 
 def sign_payload(payload: bytes, private_key_pem: bytes) -> str:
-    from cryptography.hazmat.primitives import padding as sym_padding
+    from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
     private_key = serialization.load_pem_private_key(
         private_key_pem, password=None, backend=default_backend()
     )
+    # RSA-PSS with SHA-256 (cryptography requires explicit padding; the old
+    # call passed none and raised TypeError, breaking the mTLS path entirely).
     signature = private_key.sign(
         payload,
+        asym_padding.PSS(
+            mgf=asym_padding.MGF1(hashes.SHA256()),
+            salt_length=asym_padding.PSS.MAX_LENGTH,
+        ),
         hashes.SHA256(),
     )
     return signature.hex()
+
+
+def verify_payload_signature(payload: bytes, signature_hex: str, public_key_pem: str) -> bool:
+    """Verify an RSA-PSS/SHA-256 signature. Returns False on any failure."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+        from cryptography.exceptions import InvalidSignature
+        public_key = serialization.load_pem_public_key(
+            public_key_pem.encode(), backend=default_backend()
+        )
+        public_key.verify(
+            bytes.fromhex(signature_hex),
+            payload,
+            asym_padding.PSS(
+                mgf=asym_padding.MGF1(hashes.SHA256()),
+                salt_length=asym_padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return True
+    except Exception:
+        return False
 
 
 def compute_hmac(payload: bytes, api_key: str) -> str:

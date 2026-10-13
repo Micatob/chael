@@ -22,6 +22,40 @@ store = AgentStore()
 ca = CertificateAuthority()
 
 
+def _canonical_registration_payload(req: "RegisterRequest") -> bytes:
+    """Byte-exact payload the agent signs (must match the client's
+    json.dumps(..., sort_keys=True) construction)."""
+    return json.dumps({
+        "machine_id": req.machine_id,
+        "hostname": req.hostname,
+        "platform": req.platform,
+        "platform_version": req.platform_version,
+        "os_info": req.os_info,
+        "public_key": req.public_key,
+        "agent_version": req.agent_version,
+    }, sort_keys=True).encode()
+
+
+def _verify_mtls_signature(req: "RegisterRequest") -> bool:
+    """RSA-PSS/SHA-256 proof-of-possession of the registered private key."""
+    try:
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+        from cryptography.hazmat.primitives import hashes as _hashes
+        from cryptography.hazmat.backends import default_backend as _backend
+        from cryptography.exceptions import InvalidSignature as _InvalidSig
+        pub = _ser.load_pem_public_key(req.public_key.encode(), backend=_backend())
+        pub.verify(
+            bytes.fromhex(req.signature),
+            _canonical_registration_payload(req),
+            _pad.PSS(mgf=_pad.MGF1(_hashes.SHA256()), salt_length=_pad.PSS.MAX_LENGTH),
+            _hashes.SHA256(),
+        )
+        return True
+    except Exception:
+        return False
+
+
 class RegisterRequest(BaseModel):
     machine_id: str
     hostname: str
@@ -64,6 +98,11 @@ async def register_agent(req: RegisterRequest):
         agent_id = existing["agent_id"]
         log.info("Re-registering agent %s (machine: %s)", agent_id, req.machine_id)
 
+        if req.public_key:
+            # Proof-of-possession: the caller must hold the private key that
+            # matches the registered public key. Certain, not guessable.
+            if req.signature and not _verify_mtls_signature(req):
+                raise HTTPException(status_code=401, detail="Invalid registration signature")
         if req.public_key and existing.get("public_key_pem"):
             cert_pem, ca_pem = ca.sign_agent_cert(
                 req.machine_id, req.hostname, req.public_key
@@ -93,6 +132,10 @@ async def register_agent(req: RegisterRequest):
     auth_method = "api_key"
 
     if req.public_key:
+        if req.signature and not _verify_mtls_signature(req):
+            raise HTTPException(status_code=401, detail="Invalid registration signature")
+        if req.public_key and not req.signature:
+            log.warning("mTLS registration for %s carries no signature (legacy client) — proceeding", req.machine_id)
         try:
             cert_pem, ca_pem = ca.sign_agent_cert(
                 req.machine_id, req.hostname, req.public_key
@@ -219,6 +262,7 @@ async def get_agent(agent_id: str, user: dict = Depends(require_roles(["ADMIN"])
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent.pop("api_key_hash", None)
+    agent.pop("agent_key_raw", None)
     agent.pop("public_key_pem", None)
     agent.pop("client_cert_pem", None)
     agent.pop("ca_cert_pem", None)
@@ -277,7 +321,7 @@ async def rotate_api_key(agent_id: str, user: dict = Depends(require_roles(["ADM
         raise HTTPException(status_code=404, detail="Agent not found")
     new_key = secrets.token_hex(32)
     new_hash = hashlib.sha256(new_key.encode()).hexdigest()
-    store.rotate_api_key(agent_id, new_hash)
+    store.rotate_api_key(agent_id, new_hash, new_key)
     return {"agent_id": agent_id, "api_key": new_key}
 
 

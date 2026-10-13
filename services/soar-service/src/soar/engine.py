@@ -67,6 +67,8 @@ class SOAREngine:
         self._redis = redis_client if redis_client is not None else self._connect_redis()
         self._pending_key = "chael:soar:pending"
         self._tasks_key = "chael:soar:agent_tasks"
+        self._playbooks_key = "chael:soar:custom_playbooks"
+        self._versions_key = "chael:soar:playbook_versions"
         # Playbook definitions: name → list of action definitions
         self.playbooks = {
             "BRUTE_FORCE": [
@@ -174,6 +176,11 @@ class SOAREngine:
         self._execution_history: List[Dict[str, Any]] = []
         # Custom playbooks (user-defined)
         self._custom_playbooks: Dict[str, List[Dict[str, Any]]] = {}
+        # Version history per custom playbook: name → [{version, actions,
+        # created_at, created_by}]. v1 is the create payload; every update
+        # appends. Rollback restores a prior version as a NEW version (audit
+        # trail is append-only — history is never rewritten).
+        self._playbook_versions: Dict[str, List[Dict[str, Any]]] = {}
         # Agent response tasks: task_id → task record. Agents poll
         # GET /agent/tasks and report back — this is how remote endpoints
         # get contained when no EDR is configured.
@@ -226,6 +233,16 @@ class SOAREngine:
             self._redis.delete(self._tasks_key)
             if tasks:
                 self._redis.hset(self._tasks_key, mapping=tasks)
+            if self._custom_playbooks:
+                self._redis.hset(self._playbooks_key, mapping={
+                    name: json.dumps(actions, default=str)
+                    for name, actions in self._custom_playbooks.items()
+                })
+            if self._playbook_versions:
+                self._redis.hset(self._versions_key, mapping={
+                    name: json.dumps(history, default=str)
+                    for name, history in self._playbook_versions.items()
+                })
         except Exception as e:
             logger.warning("SOAR state persist failed: %s", e)
 
@@ -252,6 +269,18 @@ class SOAREngine:
                     task = json.loads(raw)
                     if task.get("task_id"):
                         self._agent_tasks[task["task_id"]] = task
+                except Exception:
+                    continue
+            for name, raw in self._redis.hgetall(self._playbooks_key).items():
+                try:
+                    if name not in self.playbooks:
+                        self._custom_playbooks[name] = json.loads(raw)
+                except Exception:
+                    continue
+            for name, raw in self._redis.hgetall(self._versions_key).items():
+                try:
+                    if name not in self.playbooks:
+                        self._playbook_versions[name] = json.loads(raw)
                 except Exception:
                     continue
             if self._pending_actions or self._agent_tasks:
@@ -793,23 +822,104 @@ class SOAREngine:
         all_playbooks.update(self._custom_playbooks)
         return all_playbooks
 
-    def create_custom_playbook(self, name: str, actions: List[Dict[str, Any]]) -> bool:
-        """Create a custom playbook with the given actions."""
+    def _record_playbook_version(self, name: str, actions: List[Dict[str, Any]], created_by: str = "admin") -> int:
+        history = self._playbook_versions.setdefault(name, [])
+        version = (history[-1]["version"] + 1) if history else 1
+        history.append({
+            "version": version,
+            "actions": [dict(a) for a in actions],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": created_by,
+        })
+        if len(history) > 20:
+            del history[:len(history) - 20]
+        return version
+
+    def create_custom_playbook(self, name: str, actions: List[Dict[str, Any]], created_by: str = "admin") -> bool:
+        """Create a custom playbook with the given actions (records v1)."""
         if name in self.playbooks:
             return False  # Cannot override built-in playbooks
+        if name in self._custom_playbooks:
+            return False  # Already exists — use update (which versions)
         self._custom_playbooks[name] = actions
+        self._record_playbook_version(name, actions, created_by)
         logger.info("Created custom playbook: %s with %d actions", name, len(actions))
+        self._persist_state()
         return True
 
-    def update_custom_playbook(self, name: str, actions: List[Dict[str, Any]]) -> bool:
-        """Update an existing custom playbook."""
+    def update_custom_playbook(self, name: str, actions: List[Dict[str, Any]], created_by: str = "admin") -> bool:
+        """Update an existing custom playbook (appends a new version)."""
         if name in self.playbooks:
             return False  # Cannot modify built-in playbooks
         if name not in self._custom_playbooks:
             return False
         self._custom_playbooks[name] = actions
+        self._record_playbook_version(name, actions, created_by)
         logger.info("Updated custom playbook: %s", name)
+        self._persist_state()
         return True
+
+    def get_playbook_versions(self, name: str) -> List[Dict[str, Any]]:
+        """Version history for a custom playbook (oldest → newest)."""
+        return [dict(v) for v in self._playbook_versions.get(name.upper(), [])]
+
+    def rollback_playbook(self, name: str, version: int, created_by: str = "admin") -> bool:
+        """Restore a prior version as a NEW version (history append-only)."""
+        name = (name or "").upper()
+        if name in self.playbooks or name not in self._custom_playbooks:
+            return False
+        for v in self._playbook_versions.get(name, []):
+            if v.get("version") == int(version):
+                self._custom_playbooks[name] = [dict(a) for a in v["actions"]]
+                self._record_playbook_version(name, self._custom_playbooks[name], created_by)
+                logger.info("Rolled back playbook %s to v%s (as new version)", name, version)
+                self._persist_state()
+                return True
+        return False
+
+    def dry_run_playbook(self, incident: Dict[str, Any], playbook: str = "",
+                         actions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Evaluate a playbook against a canary incident WITHOUT executing
+        anything: no firewall/EDR calls, no notifications, no queue writes.
+        Returns the resolved action list with approval gating + a verdict."""
+        from models.schema import Incident as _Incident
+        try:
+            inc = _Incident(**incident)
+        except Exception as e:
+            raise ValueError(f"Invalid incident payload: {e}")
+        if actions:
+            resolved = [dict(a) for a in actions]
+            source = "adhoc"
+        else:
+            pname = (playbook or "").upper()
+            if pname:
+                resolved = [dict(a) for a in self.get_playbook(pname)]
+                if not resolved:
+                    raise ValueError(f"Unknown playbook '{playbook}'")
+                source = pname
+            else:
+                resolved = self._determine_playbook(inc)
+                source = "auto-selected"
+        plan = []
+        gated = 0
+        for a in resolved:
+            gate = self._requires_approval(a)
+            gated += 1 if gate else 0
+            plan.append({
+                "action": a.get("action", ""),
+                "params": a.get("params", {}) or {},
+                "requires_approval": gate,
+                "would_execute": "after-approval" if gate else "immediately",
+            })
+        return {
+            "playbook": source,
+            "incident_id": inc.incident_id,
+            "actions_total": len(plan),
+            "gated_actions": gated,
+            "auto_actions": len(plan) - gated,
+            "plan": plan,
+            "verdict": "safe-to-test" if not gated else "needs-approver",
+        }
 
     def delete_custom_playbook(self, name: str) -> bool:
         """Delete a custom playbook."""
@@ -833,7 +943,8 @@ class SOAREngine:
     # forensics (auto-queued on severe incidents, read-only, needs no approval).
     VALID_AGENT_ACTIONS = ("isolate", "unisolate", "block", "unblock",
                            "kill_process", "quarantine_file",
-                           "delete_persistence", "collect_triage")
+                           "delete_persistence", "collect_triage",
+                           "collect_memory", "collect_disk_image")
 
     def queue_agent_task(self, action: str, target: str, incident_id: str = "",
                          agent_id: str = "", hostname: str = "",

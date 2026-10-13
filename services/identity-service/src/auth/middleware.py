@@ -27,7 +27,6 @@ PUBLIC_PATHS = {
 PUBLIC_PATH_PATTERNS = [
     re.compile(r"^/api/agents/[^/]+/heartbeat$"),
     re.compile(r"^/api/auth/agent/[^/]+/heartbeat$"),
-    re.compile(r"^/api/auth/agent/[^/]+/mark-online$"),
 ]
 
 class AuthMiddleware(BaseHTTPMiddleware):

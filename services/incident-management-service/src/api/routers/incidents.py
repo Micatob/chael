@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Response, File, UploadFile
+from fastapi import APIRouter, HTTPException, Depends, Response, File, Form, UploadFile
 from typing import List, Dict, Any
 from incidents.repository import IncidentRepository
 from incidents.service import IncidentService
@@ -187,6 +187,95 @@ async def upload_bundle(incident_id: str, bundle: UploadFile = File(...),
         raise HTTPException(status_code=400, detail=msg)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{incident_id}/evidence/image-chunk",
+              dependencies=[Depends(require_roles(["ADMIN", "AGENT"]))])
+async def upload_image_chunk(incident_id: str, upload_id: str = Form(""), chunk_index: int = Form(0),
+                             chunk: UploadFile = File(...),
+                             service: IncidentService = Depends(get_incident_service)):
+    """Forensic image chunk upload (phase 2 behind triage bundles): the agent
+    streams ≤10MB chunks; the server stages them until image-complete seals
+    the evidence. Staging without completion expires with the container."""
+    import os as _os
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{1,64}", upload_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid 'upload_id'")
+    if chunk_index < 0 or chunk_index > 999999:
+        raise HTTPException(status_code=400, detail="Invalid 'chunk_index'")
+    incident = service.repo.get_by_id(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    data = await chunk.read()
+    if len(data) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Chunk too large (max 12MB)")
+    stage = _os.path.join(service.EVIDENCE_DIR, incident_id, f".upload_{upload_id}")
+    _os.makedirs(stage, exist_ok=True)
+    with open(_os.path.join(stage, f"chunk_{chunk_index:06d}"), "wb") as fh:
+        fh.write(data)
+    return {"status": "staged", "upload_id": upload_id,
+            "chunk_index": chunk_index, "bytes": len(data)}
+
+
+@router.post("/{incident_id}/evidence/image-complete",
+              dependencies=[Depends(require_roles(["ADMIN", "AGENT"]))])
+async def complete_image_upload(incident_id: str, data: Dict[str, Any],
+                                service: IncidentService = Depends(get_incident_service)):
+    """Reassemble staged chunks (ordered), SHA-256 verify, seal as evidence."""
+    import hashlib as _hashlib
+    import os as _os
+    import re as _re
+    upload_id = (data.get("upload_id") or "")
+    filename = _os.path.basename(data.get("filename") or "image.bin")[:120]
+    kind = (data.get("kind") or "disk-image").strip().lower()
+    if kind not in ("disk-image", "memory"):
+        raise HTTPException(status_code=400, detail="kind must be disk-image|memory")
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{1,64}", upload_id):
+        raise HTTPException(status_code=400, detail="Invalid 'upload_id'")
+    expected_sha = (data.get("sha256") or "").lower()
+    if not _re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+        raise HTTPException(status_code=400, detail="Missing/invalid 'sha256'")
+    incident = service.repo.get_by_id(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    stage = _os.path.join(service.EVIDENCE_DIR, incident_id, f".upload_{upload_id}")
+    if not _os.path.isdir(stage):
+        raise HTTPException(status_code=404, detail="Upload staging not found")
+    parts = sorted(p for p in _os.listdir(stage) if p.startswith("chunk_"))
+    if not parts:
+        raise HTTPException(status_code=400, detail="No chunks staged")
+    max_bytes = 4 * 1024 * 1024 * 1024
+    h = _hashlib.sha256()
+    size = 0
+    dest_dir = _os.path.join(service.EVIDENCE_DIR, incident_id)
+    dest = _os.path.join(dest_dir, filename)
+    with open(dest, "wb") as out:
+        for p in parts:
+            with open(_os.path.join(stage, p), "rb") as fh:
+                while True:
+                    blk = fh.read(4 * 1024 * 1024)
+                    if not blk:
+                        break
+                    size += len(blk)
+                    if size > max_bytes:
+                        out.close()
+                        _os.remove(dest)
+                        raise HTTPException(status_code=400, detail="Image exceeds 4GB cap")
+                    h.update(blk)
+                    out.write(blk)
+    if h.hexdigest() != expected_sha:
+        _os.remove(dest)
+        raise HTTPException(status_code=400, detail="SHA-256 mismatch — image rejected")
+    import shutil as _shutil
+    _shutil.rmtree(stage, ignore_errors=True)
+    ev = service.add_evidence(incident_id, {
+        "type": kind,
+        "title": f"Forensic image {filename}",
+        "description": f"{size} bytes in {len(parts)} chunks at {dest}",
+        "sha256": expected_sha,
+        "collector": data.get("collector", "agent"),
+    }, actor=data.get("collector", "agent"))
+    return {"status": "sealed", "evidence": ev, "bytes": size, "chunks": len(parts)}
 
 
 @router.post("/{incident_id}/hold", dependencies=[Depends(require_roles(["ADMIN"]))])

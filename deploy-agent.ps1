@@ -173,6 +173,9 @@ Write-Step "Downloading agent files from $SiemUrl..."
 $agentFiles = @(
     "agent.py",
     "requirements.txt",
+    "response.py",
+    "pre_filter.py",
+    "agent_registration.py",
     "yara_scanner.py",
     "registry_monitor.py",
     "docker_monitor.py",

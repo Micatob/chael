@@ -306,6 +306,12 @@ const SOAR: React.FC = () => {
               <option value="unisolate">unisolate (recover)</option>
               <option value="block">block IP on endpoint</option>
               <option value="unblock">unblock IP on endpoint</option>
+              <option value="kill_process">kill process on endpoint</option>
+              <option value="quarantine_file">quarantine file on endpoint</option>
+              <option value="delete_persistence">delete persistence on endpoint</option>
+              <option value="collect_triage">collect triage bundle</option>
+              <option value="collect_memory">collect memory image (phase 2)</option>
+              <option value="collect_disk_image">collect disk image (phase 2)</option>
             </select>
             <input type="text" value={taskTarget} onChange={(e) => setTaskTarget(e.target.value)}
               placeholder="Target host or IP..." className="flex-1 text-sm rounded px-3 py-2 min-w-40" style={inputStyle}

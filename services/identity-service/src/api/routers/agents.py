@@ -19,6 +19,7 @@ store = AgentStore()
 
 class AgentRegisterRequest(BaseModel):
     hostname: str
+    agent_name: str = ""
     metadata: dict = {}
 
 
@@ -58,7 +59,8 @@ async def register_agent(request: AgentRegisterRequest, user: dict = Depends(req
     agent_id = str(uuid.uuid4())
     agent_key = secrets.token_hex(32)
     agent_key_hash = hashlib.sha256(agent_key.encode()).hexdigest()
-    hostname = request.hostname or "unknown"
+    hostname = (request.hostname or request.agent_name or "unknown").strip() or "unknown"
+    agent_name = (request.agent_name or hostname).strip() or "unknown"
 
     success = store.register_agent(
         agent_id=agent_id,
@@ -67,7 +69,7 @@ async def register_agent(request: AgentRegisterRequest, user: dict = Depends(req
         api_key_hash=agent_key_hash,
         agent_key_raw=agent_key,
         agent_version="1.0.0",
-        metadata={"auto_registered": True, "agent_name": request.agent_name, **request.metadata},
+        metadata={"auto_registered": False, "agent_name": agent_name, **(request.metadata or {})},
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to register agent")
@@ -78,7 +80,7 @@ async def register_agent(request: AgentRegisterRequest, user: dict = Depends(req
 
 @router.post("/agent/auto-register", response_model=AgentRegisterResponse)
 async def auto_register_agent(request: AgentAutoRegisterRequest):
-    hostname = request.hostname or request.agent_name
+    hostname = (request.hostname or request.agent_name or "unknown").strip() or "unknown"
     existing = store.get_agent_by_hostname(hostname)
     if existing and existing.get("status") != "revoked":
         agent_key = existing.get("agent_key_raw") or secrets.token_hex(32)
@@ -98,7 +100,7 @@ async def auto_register_agent(request: AgentAutoRegisterRequest):
         api_key_hash=agent_key_hash,
         agent_key_raw=agent_key,
         agent_version="1.0.0",
-        metadata={"auto_registered": True, "agent_name": request.agent_name, **request.metadata},
+        metadata={"auto_registered": True, "agent_name": request.agent_name, **(request.metadata or {})},
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to register agent")
@@ -134,10 +136,16 @@ async def verify_agent(request: AgentVerifyRequest):
 
 
 @router.post("/agent/{agent_id}/mark-online")
-async def mark_agent_online(agent_id: str):
+async def mark_agent_online(agent_id: str, user: dict = Depends(require_roles(["ADMIN", "AGENT"]))):
     agent = store.get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    # Ownership certainty: an AGENT token may only mark ITSELF online (the
+    # token id is the agent_id the server issued at verify time). ADMIN
+    # operators (the Agents page button) may mark any agent. A bare UUID
+    # is no longer sufficient on its own.
+    if user.get("role") == "AGENT" and user.get("id") != agent_id:
+        raise HTTPException(status_code=403, detail="Agents may only mark themselves online")
     store.mark_online(agent_id)
     return {"status": "online", "agent_id": agent_id}
 
@@ -197,7 +205,7 @@ async def rotate_agent_key(agent_id: str, user: dict = Depends(require_roles(["A
     new_key = secrets.token_hex(32)
     new_hash = hashlib.sha256(new_key.encode()).hexdigest()
 
-    success = store.rotate_api_key(agent_id, new_hash)
+    success = store.rotate_api_key(agent_id, new_hash, new_key)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to rotate key")
 

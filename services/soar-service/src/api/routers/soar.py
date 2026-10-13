@@ -273,10 +273,13 @@ async def list_playbooks():
         playbooks = soar_engine.get_playbooks()
         result = {}
         for name, actions in playbooks.items():
+            history = soar_engine.get_playbook_versions(name)
             result[name] = {
                 "name": name,
                 "actions": actions,
                 "is_custom": name not in soar_engine.playbooks,
+                "version": history[-1]["version"] if history else None,
+                "versions_count": len(history),
             }
         return {"playbooks": result}
     except Exception as e:
@@ -284,34 +287,80 @@ async def list_playbooks():
 
 
 @router.post("/playbooks", status_code=201, dependencies=[Depends(require_roles(["ADMIN"]))])
-async def create_playbook(data: dict):
+async def create_playbook(data: dict, user: dict = Depends(require_roles(["ADMIN"]))):
     """Create a custom playbook. Cannot override built-in playbooks."""
     try:
         name = data.get("name", "").upper().strip()
         actions = data.get("actions", [])
         if not name or not actions:
             raise HTTPException(status_code=400, detail="Name and actions are required")
-        success = soar_engine.create_custom_playbook(name, actions)
+        success = soar_engine.create_custom_playbook(
+            name, actions, created_by=user.get("username", "admin"))
         if not success:
             raise HTTPException(status_code=409, detail=f"Cannot override built-in playbook '{name}'")
-        return {"status": "created", "name": name, "actions_count": len(actions)}
+        return {"status": "created", "name": name, "actions_count": len(actions), "version": 1}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/playbooks/dry-run", dependencies=[Depends(require_roles(["ADMIN", "ANALYST"]))])
+async def dry_run_playbook(data: dict):
+    """Evaluate a playbook against a canary incident with ZERO side effects:
+    nothing executes, nothing queues, nothing notifies. Body: {incident: {...},
+    playbook?: name, actions?: [...]}. Use before live use."""
+    try:
+        incident = data.get("incident") or {}
+        if not incident:
+            raise HTTPException(status_code=400, detail="Missing 'incident' payload")
+        try:
+            result = soar_engine.dry_run_playbook(
+                incident, playbook=data.get("playbook", ""),
+                actions=data.get("actions"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "dry-run", **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/playbooks/{name}/versions", dependencies=[Depends(require_roles(["ADMIN", "ANALYST"]))])
+async def playbook_versions(name: str):
+    """Append-only version history for a custom playbook (oldest → newest)."""
+    history = soar_engine.get_playbook_versions(name)
+    if not history:
+        raise HTTPException(status_code=404, detail=f"No versions for playbook '{name.upper()}'")
+    return {"name": name.upper(), "versions": history}
+
+
+@router.post("/playbooks/{name}/rollback/{version}", dependencies=[Depends(require_roles(["ADMIN"]))])
+async def rollback_playbook(name: str, version: int, user: dict = Depends(require_roles(["ADMIN"]))):
+    """Restore a prior version as a NEW version (history is never rewritten)."""
+    ok = soar_engine.rollback_playbook(name, version, created_by=user.get("username", "admin"))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Cannot roll back '{name.upper()}' to v{version}")
+    return {"status": "rolled-back", "name": name.upper(),
+            "restored_version": version,
+            "current_version": soar_engine.get_playbook_versions(name)[-1]["version"]}
+
+
 @router.put("/playbooks/{name}", dependencies=[Depends(require_roles(["ADMIN"]))])
-async def update_playbook(name: str, data: dict):
-    """Update a custom playbook."""
+async def update_playbook(name: str, data: dict, user: dict = Depends(require_roles(["ADMIN"]))):
+    """Update a custom playbook (appends a new version)."""
     try:
         actions = data.get("actions", [])
         if not actions:
             raise HTTPException(status_code=400, detail="Actions are required")
-        success = soar_engine.update_custom_playbook(name.upper(), actions)
+        success = soar_engine.update_custom_playbook(
+            name.upper(), actions, created_by=user.get("username", "admin"))
         if not success:
             raise HTTPException(status_code=404, detail=f"Custom playbook '{name}' not found or is built-in")
-        return {"status": "updated", "name": name.upper()}
+        history = soar_engine.get_playbook_versions(name)
+        return {"status": "updated", "name": name.upper(),
+                "version": history[-1]["version"] if history else 1}
     except HTTPException:
         raise
     except Exception as e:

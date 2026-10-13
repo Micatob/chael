@@ -36,6 +36,58 @@ class TestIngestionEndpoints:
         assert resp.status_code == 202
 
 
+def _token_for(role):
+    from jose import jwt as _jwt
+    from config import settings as _settings
+    return _jwt.encode(
+        {"id": f"test-{role.lower()}", "role": role, "tenant_id": "default"},
+        _settings.jwt_secret, algorithm=_settings.JWT_ALGORITHM)
+
+
+def _headers_for(role):
+    return {"Authorization": f"Bearer {_token_for(role)}"}
+
+
+class TestIngestRBAC:
+    """Only agents (and admins) may write telemetry — human SOC logins cannot."""
+
+    def _log(self):
+        return {"host": "h", "source": "s", "log_type": "generic",
+                "severity": "INFO", "message": "m", "metadata": {}}
+
+    def test_agent_may_ingest(self):
+        resp = client.post("/api/logs/ingest", json=self._log(),
+                           headers=_headers_for("AGENT"))
+        assert resp.status_code == 202
+
+    def test_analyst_may_not_ingest(self):
+        resp = client.post("/api/logs/ingest", json=self._log(),
+                           headers=_headers_for("ANALYST"))
+        assert resp.status_code == 403
+
+    def test_approver_may_not_ingest(self):
+        resp = client.post("/api/logs/ingest", json=self._log(),
+                           headers=_headers_for("APPROVER"))
+        assert resp.status_code == 403
+
+    def test_anonymous_may_not_ingest(self):
+        resp = client.post("/api/logs/ingest", json=self._log())
+        assert resp.status_code == 401
+
+    def test_analyst_may_not_ingest_raw(self):
+        resp = client.post("/api/logs/raw/syslog", json={"message": "x"},
+                           headers=_headers_for("ANALYST"))
+        assert resp.status_code == 403
+
+    def test_agent_may_ingest_yara(self):
+        resp = client.post("/api/logs/yara/events", json=[], headers=_headers_for("AGENT"))
+        assert resp.status_code == 202
+
+    def test_analyst_may_not_ingest_yara(self):
+        resp = client.post("/api/logs/yara/events", json=[], headers=_headers_for("ANALYST"))
+        assert resp.status_code == 403
+
+
 class TestHeartbeatEndpoint:
     def test_heartbeat(self, auth_headers):
         resp = client.post("/api/logs/heartbeat", json={

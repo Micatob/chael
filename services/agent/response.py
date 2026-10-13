@@ -24,7 +24,8 @@ log = logging.getLogger("chael-agent-response")
 
 VALID_ACTIONS = ("isolate", "unisolate", "block", "unblock",
                    "kill_process", "quarantine_file",
-                   "delete_persistence", "collect_triage")
+                   "delete_persistence", "collect_triage",
+                   "collect_memory", "collect_disk_image")
 
 # Never kill these, even if ordered to (typo/malice guard).
 PROTECTED_PROCESSES = {
@@ -135,6 +136,10 @@ def execute_task(task, ctx=None):
         return delete_persistence(task)
     if action == "collect_triage":
         return collect_triage(task, ctx)
+    if action == "collect_memory":
+        return collect_memory(task, ctx)
+    if action == "collect_disk_image":
+        return collect_disk_image(task, ctx)
     return {"success": False, "error": f"unknown action: {action}"}
 
 
@@ -304,6 +309,177 @@ def _upload_bundle(ctx, incident_id, filename, blob):
         return {"success": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
     except Exception as e:
         return {"success": False, "error": str(e)[:200]}
+
+
+IMAGING_CHUNK_BYTES = 8 * 1024 * 1024
+IMAGING_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _upload_image(ctx, incident_id, filename, blob, kind):
+    """Chunked forensic upload: stage 8MB chunks, then seal. Returns dict."""
+    import hashlib as _hashlib
+    import uuid as _uuid
+    if not incident_id:
+        return {"success": False, "error": "imaging needs 'incident_id' (upload destination)"}
+    if len(blob) > IMAGING_MAX_BYTES:
+        return {"success": False, "error": f"image too large ({len(blob)} bytes, max 4GB)"}
+    sha = _hashlib.sha256(blob).hexdigest()
+    upload_id = _uuid.uuid4().hex
+    base = (ctx.get("siem_url") or "").rstrip("/")
+    headers = (ctx.get("auth_headers") or {})()
+    try:
+        for i in range(0, len(blob), IMAGING_CHUNK_BYTES):
+            piece = blob[i:i + IMAGING_CHUNK_BYTES]
+            r = requests.post(
+                f"{base}/api/incidents/{incident_id}/evidence/image-chunk",
+                data={"upload_id": upload_id, "chunk_index": str(i // IMAGING_CHUNK_BYTES)},
+                files={"chunk": (f"chunk-{(i // IMAGING_CHUNK_BYTES):06d}", piece,
+                                 "application/octet-stream")},
+                headers=headers, timeout=120, verify=False)
+            if r.status_code != 200:
+                return {"success": False, "error": f"chunk upload HTTP {r.status_code}: {r.text[:200]}"}
+        r = requests.post(
+            f"{base}/api/incidents/{incident_id}/evidence/image-complete",
+            json={"upload_id": upload_id, "filename": filename,
+                  "sha256": sha, "kind": kind},
+            headers=headers, timeout=120, verify=False)
+        if r.status_code == 200:
+            return {"success": True, "backend": "imaging", "sha256": sha,
+                    "bytes": len(blob), "chunks": (len(blob) + IMAGING_CHUNK_BYTES - 1) // IMAGING_CHUNK_BYTES,
+                    "evidence_id": r.json().get("evidence", {}).get("evidence_id", "")}
+        return {"success": False, "error": f"seal HTTP {r.status_code}: {r.text[:200]}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)[:300]}
+
+
+def _find_tool(names):
+    import os as _os
+    import shutil as _shutil
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    for n in names:
+        cand = _os.path.join(here, n)
+        if _os.path.isfile(cand):
+            return cand
+        found = _shutil.which(n)
+        if found:
+            return found
+    return ""
+
+
+def collect_memory(task, ctx=None):
+    """Phase-2 memory acquisition. Uses WinPmem (Windows) or AVML/LiME
+    (Linux) when present; otherwise fails LOUDLY naming the missing tool —
+    never a fake SUCCESS."""
+    import os as _os
+    import tempfile as _tf
+    import time as _time
+    system = platform.system()
+    tried = []
+    out = _os.path.join(_tf.gettempdir(), f"chael-mem-{int(_time.time())}.bin")
+    if system == "Windows":
+        tool = _find_tool(["winpmem.exe", "winpmem_mini_x64.exe", "winpmem_mini_x86.exe"])
+        tried.append("WinPmem")
+        if not tool:
+            return {"success": False, "backend": "imaging",
+                    "error": "memory acquisition needs WinPmem "
+                             "(place winpmem.exe next to agent.py); tried: WinPmem"}
+        ok, err = _run([tool, "-o", out])
+        if not ok:
+            return {"success": False, "backend": "imaging", "error": f"winpmem failed: {err}"}
+    else:
+        tool = _find_tool(["avml"])
+        tried.append("AVML")
+        if tool:
+            ok, err = _run([tool, out])
+            if not ok:
+                return {"success": False, "backend": "imaging", "error": f"avml failed: {err}"}
+        else:
+            tried.append("dd-/dev/mem")
+            ok, err = _run(["dd", "if=/dev/mem", f"of={out}", "bs=1M", "status=none"])
+            if not ok:
+                return {"success": False, "backend": "imaging",
+                        "error": "no memory tool (install AVML); tried: AVML, dd-/dev/mem: " + err}
+    try:
+        if not _os.path.isfile(out) or _os.path.getsize(out) == 0:
+            return {"success": False, "backend": "imaging", "error": "acquisition produced no data"}
+        with open(out, "rb") as fh:
+            blob = fh.read()
+    finally:
+        try:
+            _os.remove(out)
+        except Exception:
+            pass
+    if ctx and task.get("incident_id"):
+        up = _upload_image(ctx, task["incident_id"],
+                           _os.path.basename(out), blob, "memory")
+        if up.get("success"):
+            return up
+        return {"success": False, "backend": "imaging",
+                "sha256": up.get("sha256", ""), "error": "upload failed: " + up.get("error", "?")}
+    import hashlib as _hashlib
+    keep = out + ".kept"
+    try:
+        _os.rename(out, keep)
+    except Exception:
+        keep = out
+    return {"success": True, "backend": "imaging",
+            "sha256": _hashlib.sha256(blob).hexdigest(), "bytes": len(blob),
+            "bundle": keep, "note": "no upload ctx — image kept locally"}
+
+
+def collect_disk_image(task, ctx=None):
+    """Phase-2 disk acquisition: image a file/device path (or zip a
+    directory) and stream it chunked. Refuses paths that do not exist."""
+    import os as _os
+    import tempfile as _tf
+    import time as _time
+    import zipfile as _zf
+    src = str(task.get("path") or task.get("target") or "").strip()
+    if not src or not _os.path.exists(src):
+        return {"success": False, "backend": "imaging",
+                "error": "collect_disk_image needs an existing 'path' (file/device/dir)"}
+    tmp = _os.path.join(_tf.gettempdir(), f"chael-disk-{int(_time.time())}.bin")
+    try:
+        if _os.path.isdir(src):
+            with _zf.ZipFile(tmp, "w", _zf.ZIP_DEFLATED) as zf:
+                for root, _, files in _os.walk(src):
+                    for f in files:
+                        full = _os.path.join(root, f)
+                        try:
+                            zf.write(full, _os.path.relpath(full, src))
+                        except Exception:
+                            continue
+        else:
+            with open(src, "rb") as fin, open(tmp, "wb") as fout:
+                while True:
+                    blk = fin.read(4 * 1024 * 1024)
+                    if not blk:
+                        break
+                    fout.write(blk)
+                    if fout.tell() > IMAGING_MAX_BYTES:
+                        raise ValueError("image exceeds 4GB cap")
+        with open(tmp, "rb") as fh:
+            blob = fh.read()
+    except Exception as e:
+        try:
+            _os.remove(tmp)
+        except Exception:
+            pass
+        return {"success": False, "backend": "imaging", "error": str(e)[:300]}
+    try:
+        _os.remove(tmp)
+    except Exception:
+        pass
+    if ctx and task.get("incident_id"):
+        up = _upload_image(ctx, task["incident_id"],
+                           _os.path.basename(src.rstrip("/\\")) + ".bin", blob, "disk-image")
+        if up.get("success"):
+            return up
+        return {"success": False, "backend": "imaging", "error": "upload failed: " + up.get("error", "?")}
+    import hashlib as _hashlib
+    return {"success": True, "backend": "imaging",
+            "sha256": _hashlib.sha256(blob).hexdigest(), "bytes": len(blob),
+            "note": "no upload ctx — image discarded after hash (re-run with incident_id to store)"}
 
 
 class ResponsePoller:

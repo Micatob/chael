@@ -164,8 +164,10 @@ async def health():
     return {"status": "healthy", "service": "log-ingestion-service"}
 
 @router.post("/ingest", status_code=202)
-async def ingest_log(log: NormalizedLog, background_tasks: BackgroundTasks, request: Request):
-    """Normalized ingestion."""
+async def ingest_log(log: NormalizedLog, background_tasks: BackgroundTasks, request: Request,
+                     user: dict = Depends(require_roles(["ADMIN", "AGENT"]))):
+    """Normalized ingestion. Writers are agents (AGENT JWT) and admins —
+    analyst/approver logins cannot forge telemetry (403)."""
     user = getattr(request.state, "user", None)
     if user:
         agent_id = user.get("id")
@@ -181,8 +183,9 @@ async def ingest_log(log: NormalizedLog, background_tasks: BackgroundTasks, requ
     return {"status": "queued"}
 
 @router.post("/raw/{source_type}", status_code=202)
-async def ingest_raw(source_type: str, raw_payload: Dict[str, Any] = Body(...), background_tasks: BackgroundTasks = None, request: Request = None):
-    """Raw ingestion from collectors (Windows, Syslog)."""
+async def ingest_raw(source_type: str, raw_payload: Dict[str, Any] = Body(...), background_tasks: BackgroundTasks = None, request: Request = None,
+                     user: dict = Depends(require_roles(["ADMIN", "AGENT"]))):
+    """Raw ingestion from collectors (Windows, Syslog). AGENT/ADMIN only."""
     normalizer = NormalizerFactory.get(source_type)
     if not normalizer:
         raise HTTPException(status_code=400, detail=f"Source {source_type} not supported")
@@ -338,8 +341,9 @@ async def list_sources():
 
 
 @router.post("/yara/events", status_code=202)
-async def ingest_yara_events(batch: List[dict], background_tasks: BackgroundTasks):
-    """Batch ingest YARA scan events from agent."""
+async def ingest_yara_events(batch: List[dict], background_tasks: BackgroundTasks,
+                             user: dict = Depends(require_roles(["ADMIN", "AGENT"]))):
+    """Batch ingest YARA scan events from agent. AGENT/ADMIN only."""
     count = 0
     for event in batch:
         try:

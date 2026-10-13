@@ -91,6 +91,7 @@ step "Downloading agent files from $SIEM_URL..."
 BASE_URL="$SIEM_URL/api/agent/static"
 FILES=(
   agent.py requirements.txt
+  response.py pre_filter.py agent_registration.py
   yara_scanner.py docker_monitor.py cis_benchmark.py
   vuln_scanner.py registry_monitor.py auto_update.py
 )

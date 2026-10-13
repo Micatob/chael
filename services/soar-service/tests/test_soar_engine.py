@@ -301,3 +301,109 @@ class TestApprovalRBAC:
         pending = engine.get_pending_actions("inc-test-002")
         assert len(pending) >= 1
         assert pending[0]["requested_by"] == "analyst-zoe"
+
+
+def _canary(high=True):
+    if high:
+        return {
+            "incident_id": "inc-canary-1",
+            "risk_score": 95,
+            "description": "CRITICAL canary",
+            "artifacts": {"attack_type": "critical", "host": "canary-01"},
+            "source_logs": [],
+        }
+    return {
+        "incident_id": "inc-canary-1",
+        "risk_score": 20,
+        "description": "Minor timeout event",
+        "artifacts": {"host": "canary-01"},
+        "source_logs": [],
+    }
+
+
+class TestDryRun:
+    def test_auto_selected_critical_is_gated(self, engine):
+        out = engine.dry_run_playbook(_canary())
+        assert out["incident_id"] == "inc-canary-1"
+        assert out["actions_total"] > 0
+        assert out["gated_actions"] >= 1
+        assert out["verdict"] == "needs-approver"
+        assert any(p["action"] == "isolate_host" and p["would_execute"] == "after-approval"
+                   for p in out["plan"])
+
+    def test_low_risk_runs_free(self, engine):
+        out = engine.dry_run_playbook(_canary(high=False))
+        assert out["gated_actions"] == 0
+        assert out["verdict"] == "safe-to-test"
+
+    def test_named_playbook(self, engine):
+        out = engine.dry_run_playbook(_canary(), playbook="BRUTE_FORCE")
+        assert out["playbook"] == "BRUTE_FORCE"
+        assert any(p["action"] == "block_ip" for p in out["plan"])
+
+    def test_adhoc_actions(self, engine):
+        out = engine.dry_run_playbook(
+            _canary(), actions=[{"action": "notify_admin", "params": {"channel": "email"}}])
+        assert out["playbook"] == "adhoc"
+        assert out["verdict"] == "safe-to-test"
+
+    def test_unknown_playbook_rejected(self, engine):
+        with pytest.raises(ValueError, match="Unknown playbook"):
+            engine.dry_run_playbook(_canary(), playbook="NOPE")
+
+    def test_invalid_incident_rejected(self, engine):
+        with pytest.raises(ValueError, match="Invalid incident"):
+            engine.dry_run_playbook({"risk_score": "high"})
+
+    def test_dry_run_has_zero_side_effects(self, engine):
+        before_pending = len(engine._pending_actions)
+        before_tasks = len(engine._agent_tasks)
+        before_hist = len(engine._execution_history)
+        engine.dry_run_playbook(_canary())
+        engine.dry_run_playbook(_canary(), playbook="MALWARE_DETECTED")
+        assert len(engine._pending_actions) == before_pending
+        assert len(engine._agent_tasks) == before_tasks
+        assert len(engine._execution_history) == before_hist
+
+
+class TestPlaybookVersioning:
+    def test_create_update_rollback(self, engine):
+        acts_v1 = [{"action": "notify_admin", "params": {"channel": "email"}}]
+        assert engine.create_custom_playbook("CANARY_PB", acts_v1, created_by="admin") is True
+        assert engine.get_playbook_versions("CANARY_PB")[0]["version"] == 1
+        acts_v2 = acts_v1 + [{"action": "audit_log", "params": {}}]
+        assert engine.update_custom_playbook("CANARY_PB", acts_v2, created_by="admin") is True
+        hist = engine.get_playbook_versions("CANARY_PB")
+        assert [v["version"] for v in hist] == [1, 2]
+        assert engine.rollback_playbook("CANARY_PB", 1, created_by="admin") is True
+        hist = engine.get_playbook_versions("CANARY_PB")
+        assert [v["version"] for v in hist] == [1, 2, 3]
+        assert engine.get_playbook("CANARY_PB") == acts_v1  # v3 == v1 content
+
+    def test_builtin_protected(self, engine):
+        assert engine.create_custom_playbook("CRITICAL", []) is False
+        assert engine.update_custom_playbook("CRITICAL", []) is False
+        assert engine.rollback_playbook("CRITICAL", 1) is False
+        assert engine.rollback_playbook("MISSING", 1) is False
+        assert engine.get_playbook_versions("MISSING") == []
+
+    def test_versions_survive_rebuild(self, notifier):
+        fake = FakeRedis()
+        e1 = SOAREngine(notification_service=notifier, redis_client=fake)
+        e1.create_custom_playbook("PERSIST_PB", [{"action": "notify_admin", "params": {}}])
+        e2 = SOAREngine(notification_service=notifier, redis_client=fake)
+        assert e2.get_playbook("PERSIST_PB")
+        assert len(e2.get_playbook_versions("PERSIST_PB")) == 1
+
+
+class TestImagingActions:
+    def test_memory_and_disk_queue(self, engine):
+        t1 = engine.queue_agent_task(action="collect_memory", target="host-mem",
+                                     incident_id="inc-1", hostname="h1")
+        t2 = engine.queue_agent_task(action="collect_disk_image", target="C:\\data",
+                                     incident_id="inc-1", hostname="h1")
+        assert t1["status"] == "PENDING" and t2["status"] == "PENDING"
+
+    def test_unknown_still_rejected(self, engine):
+        with pytest.raises(ValueError, match="Unknown agent action"):
+            engine.queue_agent_task(action="rm-rf", target="x")

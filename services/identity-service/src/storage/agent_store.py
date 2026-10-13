@@ -152,7 +152,7 @@ class AgentStore:
     def update_agent_key(self, agent_id: str, api_key_hash: str, agent_key_raw: str = "") -> bool:
         conn = self._get_conn()
         try:
-            conn.execute("UPDATE agents SET api_key_hash = ?, status = 'online', agent_key_raw = COALESCE(?, agent_key_raw) WHERE agent_id = ?",
+            conn.execute("UPDATE agents SET api_key_hash = ?, status = 'online', agent_key_raw = COALESCE(NULLIF(?, ''), agent_key_raw) WHERE agent_id = ?",
                          (api_key_hash, agent_key_raw, agent_id))
             conn.commit()
             return True
@@ -259,11 +259,15 @@ class AgentStore:
         finally:
             conn.close()
 
-    def rotate_api_key(self, agent_id: str, new_api_key_hash: str) -> bool:
+    def rotate_api_key(self, agent_id: str, new_api_key_hash: str, new_api_key_raw: str = "") -> bool:
         conn = self._get_conn()
         try:
-            conn.execute("UPDATE agents SET api_key_hash = ? WHERE agent_id = ?",
-                         (new_api_key_hash, agent_id))
+            if new_api_key_raw:
+                conn.execute("UPDATE agents SET api_key_hash = ?, agent_key_raw = ? WHERE agent_id = ?",
+                             (new_api_key_hash, new_api_key_raw, agent_id))
+            else:
+                conn.execute("UPDATE agents SET api_key_hash = ? WHERE agent_id = ?",
+                             (new_api_key_hash, agent_id))
             conn.commit()
             return True
         except Exception as e:

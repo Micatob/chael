@@ -72,6 +72,26 @@ ALL_EVENT_IDS = "all"
 _agent_token: Optional[str] = None
 _token_lock = Lock()
 
+# Active credentials shared across threads (self-healing on purge/revoke).
+_current_creds_lock = Lock()
+_current_agent_id: Optional[str] = None
+_current_agent_key: Optional[str] = None
+_current_agent_name: str = HOSTNAME
+
+
+def _set_active_credentials(agent_id: str, agent_key: str, agent_name: str = ""):
+    global _current_agent_id, _current_agent_key, _current_agent_name
+    with _current_creds_lock:
+        _current_agent_id = agent_id
+        _current_agent_key = agent_key
+        if agent_name:
+            _current_agent_name = agent_name
+
+
+def _get_active_credentials() -> tuple[str, str, str]:
+    with _current_creds_lock:
+        return (_current_agent_id or "", _current_agent_key or "", _current_agent_name or HOSTNAME)
+
 
 def _authenticate(auth_url: str, agent_id: str, agent_key: str) -> str | None:
     try:
@@ -151,6 +171,40 @@ def _auto_register(siem_url: str, agent_name: str) -> tuple[str, str] | None:
         log.error("Auto-register failed: %s %s", resp.status_code, resp.text[:200])
     except requests.RequestException as e:
         log.error("Auto-register connection error: %s", e)
+    return None
+
+
+def _try_reregister(siem_url: str) -> tuple[str, str, str] | None:
+    """Self-heal after server-side purge/revoke/delete.
+
+    Invalidates stale local creds, auto-registers fresh under the same
+    agent name, saves + authenticates. Returns (agent_id, agent_key, token)
+    or None if the server is unreachable. Callers must adopt the new
+    agent_id for subsequent heartbeat/config URLs.
+    """
+    global _agent_token
+    try:
+        _, _, agent_name = _get_active_credentials()
+        name = agent_name or HOSTNAME
+        log.warning("Credentials rejected by server (purged/revoked?) — re-registering as '%s'...", name)
+        _invalidate_saved_credentials()
+        with _token_lock:
+            _agent_token = None
+        result = _auto_register(siem_url, name)
+        if not result:
+            return None
+        nid, nkey = result
+        _save_credentials(nid, nkey)
+        _set_active_credentials(nid, nkey, name)
+        token = _authenticate(siem_url, nid, nkey)
+        if token:
+            with _token_lock:
+                _agent_token = token
+            log.info("Re-registration successful — new agent id=%s", nid)
+            return (nid, nkey, token)
+        log.error("Re-registered but authentication still failed")
+    except Exception as e:
+        log.error("Re-register attempt failed: %s", e)
     return None
 
 
@@ -586,7 +640,8 @@ def _read_defender_log(poll_interval: int = 10):
 def _heartbeat_sender(siem_url: str, interval: int = 60, agent_version: str = "", agent_id: str = "", agent_key: str = ""):
     global _agent_token
     log_heartbeat_url = f"{siem_url.rstrip('/')}/api/logs/heartbeat"
-    auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{agent_id}/heartbeat"
+    cur_id, cur_key = agent_id, agent_key
+    auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/heartbeat" if cur_id else ""
     session = requests.Session()
     session.verify = False
     while not STOP.is_set():
@@ -606,16 +661,33 @@ def _heartbeat_sender(siem_url: str, interval: int = 60, agent_version: str = ""
             session.post(log_heartbeat_url, json=payload, headers=headers, timeout=10)
         except Exception as e:
             log.debug("Log heartbeat failed: %s", e)
-        if agent_id:
+        # Adopt fresh creds if another thread re-registered (purge/revoke self-heal).
+        shared_id, shared_key, _ = _get_active_credentials()
+        if shared_id and (shared_id != cur_id or shared_key != cur_key):
+            cur_id, cur_key = shared_id, shared_key
+            auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/heartbeat"
+        if cur_id:
             try:
                 r = session.post(auth_heartbeat_url, json={"version": agent_version, "metadata": payload["metadata"]}, headers=headers, timeout=10)
-                if r.status_code == 401:
+                if r.status_code == 404:
+                    # Server no longer knows this agent (purged/deleted) — re-register fresh.
+                    log.warning("Heartbeat 404: agent %s unknown to server — re-registering...", cur_id[:8] if cur_id else "?")
+                    healed = _try_reregister(siem_url)
+                    if healed:
+                        cur_id, cur_key, _ = healed
+                        auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/heartbeat"
+                elif r.status_code == 401:
                     log.info("Heartbeat auth expired, refreshing token...")
-                    token = _authenticate(siem_url, agent_id, agent_key)
+                    token = _authenticate(siem_url, cur_id, cur_key)
                     if token:
                         with _token_lock:
                             _agent_token = token
                         continue
+                    # Refresh failed: creds rejected (revoked/rotated) — re-register.
+                    healed = _try_reregister(siem_url)
+                    if healed:
+                        cur_id, cur_key, _ = healed
+                        auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/heartbeat"
             except Exception as e:
                 log.debug("Auth heartbeat failed: %s", e)
         STOP.wait(interval)
@@ -626,25 +698,33 @@ def _heartbeat_sender(siem_url: str, interval: int = 60, agent_version: str = ""
 def _reconnect_loop(siem_url: str, agent_id: str, agent_key: str, interval: int = 30):
     """Periodically re-authenticate to keep the agent online.
     If the token is missing or expired, retries auth. Updates global _agent_token on success.
+    If stored creds are rejected (purged/revoked), auto re-registers fresh.
     Runs as a daemon thread until STOP is set.
     """
     global _agent_token
-    mark_online_url = f"{siem_url.rstrip('/')}/api/auth/agent/{agent_id}/mark-online"
+    cur_id, cur_key = agent_id, agent_key
     while not STOP.is_set():
         try:
+            shared_id, shared_key, _ = _get_active_credentials()
+            if shared_id and (shared_id != cur_id or shared_key != cur_key):
+                cur_id, cur_key = shared_id, shared_key
             with _token_lock:
                 needs_refresh = _agent_token is None
-            if needs_refresh and agent_id and agent_key:
+            if needs_refresh and cur_id and cur_key:
                 log.info("Reconnect: attempting to re-authenticate...")
-                token = _authenticate(siem_url, agent_id, agent_key)
+                token = _authenticate(siem_url, cur_id, cur_key)
                 if token:
                     with _token_lock:
                         _agent_token = token
                     log.info("Reconnect: authentication successful — marking agent online")
                     try:
-                        requests.post(mark_online_url, json={"status": "online"}, timeout=5, verify=False)
+                        requests.post(f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/mark-online", json={"status": "online"}, headers=_get_auth_header(), timeout=5, verify=False)
                     except Exception:
                         pass
+                else:
+                    healed = _try_reregister(siem_url)
+                    if healed:
+                        cur_id, cur_key, _ = healed
         except Exception as e:
             log.debug("Reconnect loop error: %s", e)
         STOP.wait(interval)
@@ -675,31 +755,69 @@ def _forwarder(siem_url: str, batch_size: int = 50, agent_id: str = "", agent_ke
 
         headers = _get_auth_header()
         sent = 0
-        for entry in batch:
-            for attempt in range(3):
-                try:
-                    r = session.post(ingest_url, json=entry, headers=headers, timeout=10)
-                    if r.status_code == 202:
-                        sent += 1
+        idx = 0
+        auth_refreshes = 0
+        # Fail-fast batch sender: one bad entry or a sick server must not
+        # head-of-line-block the other 49. 401 refreshes at most twice per
+        # batch; 5xx/network requeues the remainder with backoff; 4xx drops
+        # just the offending entry (loud warning included).
+        while idx < len(batch):
+            entry = batch[idx]
+            try:
+                r = session.post(ingest_url, json=entry, headers=headers, timeout=10)
+            except requests.RequestException as e:
+                log.debug("Ingest unreachable (%s) — requeueing %d unsent, backing off %ds",
+                          e, len(batch) - idx, retry_interval)
+                for pending in batch[idx:]:
+                    try:
+                        QUEUE.put_nowait(pending)
+                    except Exception:
                         break
-                    if r.status_code == 401 and agent_id and agent_key:
-                        log.info("Token expired, re-authenticating...")
-                        token = _authenticate(auth_url, agent_id, agent_key)
-                        if token:
-                            with _token_lock:
-                                global _agent_token
-                                _agent_token = token
-                            headers = _get_auth_header()
-                            continue
-                    if attempt < 2:
-                        time.sleep(1)
-                    else:
-                        log.warning("API returned %s: %s", r.status_code, r.text[:100])
-                except requests.RequestException as e:
-                    if attempt < 2:
-                        time.sleep(1)
-                    else:
-                        log.debug("Failed to send log: %s", e)
+                STOP.wait(retry_interval)
+                break
+            if r.status_code == 202:
+                sent += 1
+                idx += 1
+                continue
+            if r.status_code == 401 and auth_refreshes < 2:
+                auth_refreshes += 1
+                cur_id, cur_key, _ = _get_active_credentials()
+                cur_id = cur_id or agent_id
+                cur_key = cur_key or agent_key
+                if cur_id and cur_key:
+                    log.info("Token expired, re-authenticating...")
+                    token = _authenticate(auth_url, cur_id, cur_key)
+                    if token:
+                        with _token_lock:
+                            global _agent_token
+                            _agent_token = token
+                        headers = _get_auth_header()
+                        continue
+                    healed = _try_reregister(auth_url)
+                    if healed:
+                        headers = _get_auth_header()
+                        continue
+                log.warning("Re-auth failed — requeueing %d unsent, backing off %ds",
+                            len(batch) - idx, retry_interval)
+                for pending in batch[idx:]:
+                    try:
+                        QUEUE.put_nowait(pending)
+                    except Exception:
+                        break
+                STOP.wait(retry_interval)
+                break
+            if 500 <= r.status_code < 600:
+                log.warning("Ingest HTTP %s — requeueing %d unsent, backing off %ds",
+                            r.status_code, len(batch) - idx, retry_interval)
+                for pending in batch[idx:]:
+                    try:
+                        QUEUE.put_nowait(pending)
+                    except Exception:
+                        break
+                STOP.wait(retry_interval)
+                break
+            log.warning("Dropping malformed entry (HTTP %s): %s", r.status_code, r.text[:100])
+            idx += 1
 
         if sent:
             log.info("Forwarded %d/%d logs to %s", sent, len(batch), ingest_url)
@@ -824,6 +942,8 @@ def main():
                     log.info("Re-registration successful, authenticated")
     else:
         log.warning("No agent-id/agent-key provided — running without authentication")
+
+    _set_active_credentials(args.agent_id or "", args.agent_key or "", args.agent_name or HOSTNAME)
 
     # Start reconnection loop: retries auth periodically if token is missing
     reconnect = Thread(

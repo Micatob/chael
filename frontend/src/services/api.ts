@@ -318,6 +318,18 @@ class ApiService {
     return this.client.get('/api/soar/agent/tasks/all');
   }
 
+  async dryRunPlaybook(incident: any, playbook?: string, actions?: any[]): Promise<AxiosResponse<any>> {
+    return this.client.post('/api/soar/playbooks/dry-run', { incident, playbook, actions });
+  }
+
+  async getPlaybookVersions(name: string): Promise<AxiosResponse<{ name: string; versions: any[] }>> {
+    return this.client.get(`/api/soar/playbooks/${encodeURIComponent(name)}/versions`);
+  }
+
+  async rollbackPlaybook(name: string, version: number): Promise<AxiosResponse<any>> {
+    return this.client.post(`/api/soar/playbooks/${encodeURIComponent(name)}/rollback/${version}`);
+  }
+
   async getAgentHeartbeats(agentId: string, limit = 50): Promise<AxiosResponse<Array<{ timestamp: string; status?: string }>>> {
     return this.client.get(`/api/agents/${agentId}/heartbeats`, { params: { limit } });
   }

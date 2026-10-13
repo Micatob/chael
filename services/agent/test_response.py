@@ -96,3 +96,60 @@ class TestExecuteTask:
                                      "incident_id": "inc-1"}, ctx)
         assert out["success"] is True and out["evidence_id"] == "ev-1"
         assert "/api/incidents/inc-1/evidence/bundle" in uploaded["url"]
+
+
+class TestImagingActions:
+    def test_disk_image_missing_path_fails_loud(self):
+        out = response.execute_task({"action": "collect_disk_image",
+                                     "path": "/no/such/path-xyz",
+                                     "incident_id": "inc-1"})
+        assert out["success"] is False and "path" in out["error"]
+
+    def test_disk_image_needs_destination(self, tmp_path):
+        victim = tmp_path / "disk.bin"
+        victim.write_bytes(b"disk-bytes")
+        out = response.execute_task({"action": "collect_disk_image",
+                                     "path": str(victim), "incident_id": ""})
+        assert out["success"] is True and "incident_id" in out.get("note", "")
+
+    def test_disk_image_chunks_and_seals(self, tmp_path, monkeypatch):
+        import hashlib
+        victim = tmp_path / "disk.bin"
+        victim.write_bytes(b"disk-bytes-" * 1000)
+        calls = []
+
+        def fake_post(url, data=None, files=None, json=None, headers=None,
+                      timeout=None, verify=None):
+            calls.append(url)
+
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    if url.endswith("image-complete"):
+                        return {"evidence": {"evidence_id": "ev-img-1"}}
+                    return {}
+
+            return R()
+
+        monkeypatch.setattr(response.requests, "post", fake_post)
+        ctx = {"siem_url": "http://siem:8001", "auth_headers": lambda: {"Authorization": "Bearer x"}}
+        out = response.execute_task({"action": "collect_disk_image",
+                                     "path": str(victim),
+                                     "incident_id": "inc-9"}, ctx)
+        assert out["success"] is True and out["evidence_id"] == "ev-img-1"
+        assert out["sha256"] == hashlib.sha256((b"disk-bytes-" * 1000)).hexdigest()
+        assert any("image-chunk" in u for u in calls) and any("image-complete" in u for u in calls)
+
+    def test_memory_without_tool_fails_loud(self, monkeypatch):
+        monkeypatch.setattr(response, "_find_tool", lambda names: "")
+        monkeypatch.setattr(response, "_run", lambda cmd, timeout=15: (False, "nope"))
+        out = response.execute_task({"action": "collect_memory",
+                                     "target": "h", "incident_id": "inc-1"})
+        assert out["success"] is False
+        assert "WinPmem" in out["error"] or "AVML" in out["error"]
+
+    def test_valid_actions_advertised(self):
+        assert "collect_memory" in response.VALID_ACTIONS
+        assert "collect_disk_image" in response.VALID_ACTIONS
