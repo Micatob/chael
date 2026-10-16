@@ -118,6 +118,35 @@ def _get_auth_header() -> dict:
     return {}
 
 
+# ── Pre-filter (import-only: drops noise before queueing) ───────────────
+# Fail-open: if no config file / empty patterns → forward everything.
+# With config.yaml pre_filtering present → allow/block/whitelist applies.
+_PREFILTER = None
+_PREFILTER_READY = False
+
+
+def _should_forward(entry: dict) -> bool:
+    global _PREFILTER, _PREFILTER_READY
+    try:
+        if not _PREFILTER_READY:
+            try:
+                from pre_filter import PreFilter
+                pf = PreFilter()
+                has_rules = bool(
+                    pf.allow_patterns or pf.block_patterns
+                    or pf.whitelist_sources or pf.watched_event_ids
+                )
+                _PREFILTER = pf if has_rules else None
+            except Exception:
+                _PREFILTER = None
+            _PREFILTER_READY = True
+        if _PREFILTER is None:
+            return True
+        return bool(_PREFILTER.should_forward(entry))
+    except Exception:
+        return True
+
+
 _AGENT_CRED_PATH = os.path.join(os.path.expanduser("~"), ".chael", "agent", "credentials.json")
 
 
@@ -387,8 +416,9 @@ def _read_windows_events_pywin32(log_name: str = "Security", poll_interval: int 
                                 "ComputerName": ev.ComputerName or HOSTNAME,
                             },
                         }
-                        QUEUE.put(entry)
-                        seen += 1
+                        if _should_forward(entry):
+                            QUEUE.put(entry)
+                            seen += 1
                 if seen:
                     log.info("Forwarded %d new events from Windows %s log", seen, log_name)
 
@@ -428,7 +458,7 @@ def _tail_file(path: str, seek_end: bool = True):
                 continue
 
             entry = _parse_syslog_line(line, path)
-            if entry:
+            if entry and _should_forward(entry):
                 QUEUE.put(entry)
 
 
@@ -483,7 +513,7 @@ def _read_journald(units: List[str]):
                     sev = "CRITICAL"
                 elif pri <= 4:
                     sev = "HIGH"
-                QUEUE.put({
+                _entry = {
                     "timestamp": datetime.fromtimestamp(entry.get("__REALTIME_TIMESTAMP", 0) / 1_000_000, tz=timezone.utc).isoformat(),
                     "host": HOSTNAME,
                     "source": f"journald:{entry.get('_SYSTEMD_UNIT', 'unknown')}",
@@ -491,7 +521,9 @@ def _read_journald(units: List[str]):
                     "severity": sev,
                     "message": str(msg)[:2000],
                     "metadata": {"unit": entry.get("_SYSTEMD_UNIT", ""), "pid": entry.get("_PID", "")},
-                })
+                }
+                if _should_forward(_entry):
+                    QUEUE.put(_entry)
 
 
 # ── Config Fetcher (SIEM tells agent what to monitor) ─────────────────────
@@ -985,6 +1017,10 @@ def main():
                 continue
             t = Thread(target=_tail_file, args=(path,), daemon=True)
             threads.append(t)
+
+    elif args.mode == "journald":
+        t = Thread(target=_read_journald, args=(args.journald_units,), daemon=True)
+        threads.append(t)
 
 
     # ── Windows Additional Log Sources ─────────────────────────────────────

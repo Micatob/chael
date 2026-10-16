@@ -4,8 +4,8 @@
 
 @layer base {
   html {
-    /* Global +1px bump (16px -> 17px): scales all rem-based Tailwind text */
-    font-size: 17px;
+    /* Base 16px (reverted 2026-10-13: 17px ate too much screen on small displays) */
+    font-size: 16px;
   }
   * {
     border-color: rgba(75,85,99,0.2);

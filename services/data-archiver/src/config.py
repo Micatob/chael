@@ -31,4 +31,10 @@ class Settings:
     SMTP_TO: ClassVar[str] = os.getenv("SMTP_TO", "")
     SMTP_TLS: ClassVar[bool] = os.getenv("SMTP_TLS", "true").lower() == "true"
 
+    # Service auth (shares identity-service JWT; gateway already enforces
+    # auth_request on /api/backup/, this is defense-in-depth for direct callers)
+    JWT_SECRET: ClassVar[str] = os.getenv("JWT_SECRET", "")
+    JWT_ALGORITHM: ClassVar[str] = "HS256"
+    DEFAULT_TENANT_ID: ClassVar[str] = os.getenv("DEFAULT_TENANT_ID", "default")
+
 settings = Settings()

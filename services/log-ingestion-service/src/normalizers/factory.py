@@ -1,4 +1,5 @@
 ﻿from .real_world import WindowsNormalizer, SyslogNormalizer, DockerNormalizer, GenericJSONNormalizer, CEFNormalizer
+from .vscode_ci import VSCodeNormalizer, CINormalizer
 from .cloud import AWSCloudTrailNormalizer, AzureNormalizer, GCPNormalizer
 from .web_server import ApacheAccessNormalizer, NginxAccessNormalizer, WebErrorNormalizer
 from typing import Dict, Optional, Any
@@ -18,6 +19,8 @@ class NormalizerFactory:
         "json": GenericJSONNormalizer(),
         "generic_json": GenericJSONNormalizer(),
         "cef": CEFNormalizer(),
+        "vscode": VSCodeNormalizer(),
+        "ci": CINormalizer(),
     }
 
     @classmethod

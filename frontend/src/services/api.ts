@@ -175,8 +175,8 @@ class ApiService {
     return this.client.get('/api/analytics/overview');
   }
 
-  async getSOARHistory(): Promise<AxiosResponse<{ history: any[] }>> {
-    return this.client.get('/api/soar/history');
+  async getSOARHistory(limit = 200): Promise<AxiosResponse<{ history: any[] }>> {
+    return this.client.get('/api/soar/history', { params: { limit } });
   }
 
   // Agent Management & Enrollment

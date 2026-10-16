@@ -187,9 +187,10 @@ async def get_pending_actions(incident_id: str):
 
 
 @router.get("/history")
-async def get_execution_history():
-    """Get the full action execution history."""
+async def get_execution_history(limit: int = 200):
+    """Get the action execution history (newest first, capped by limit)."""
     try:
+        limit = max(1, min(int(limit), 200))
         if notification_service._opensearch_client:
             response = notification_service._opensearch_client.search(
                 index="chaelsiem-audit-logs",
@@ -198,17 +199,17 @@ async def get_execution_history():
                         "range": {"timestamp": {"gte": "now-30d"}}
                     },
                     "sort": [{"timestamp": {"order": "desc"}}],
-                    "size": 200,
+                    "size": limit,
                     "_source": ["action_id", "name", "status", "incident_id", "timestamp", "error", "actor", "approved_by"],
                 },
                 ignore_unavailable=True
             )
             history = [hit["_source"] for hit in response.get("hits", {}).get("hits", [])]
             return {"history": history}
-        
+
         # Fallback to in-memory history
         history = soar_engine.get_execution_history()
-        return {"history": history[-200:]}
+        return {"history": history[-limit:]}
     except Exception as e:
         logger.error("Error fetching execution history: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

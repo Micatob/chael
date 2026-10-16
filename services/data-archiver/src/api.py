@@ -1,10 +1,11 @@
 """Backup/restore API for data-archiver (retention enforcement + disaster recovery)."""
+import hashlib
 import os
 import gzip
 import json
 import logging
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
@@ -20,6 +21,26 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+def _jwt_secret() -> str:
+    return getattr(settings, "JWT_SECRET", "") or os.getenv("JWT_SECRET", "")
+
+
+async def require_auth(request: Request):
+    """Bearer JWT check (identity-service HS256). Public: /health, /metrics, docs."""
+    secret = _jwt_secret()
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or not secret:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = auth.split(" ", 1)[1]
+    try:
+        from jose import jwt as _jwt
+        payload = _jwt.decode(token, secret, algorithms=[getattr(settings, "JWT_ALGORITHM", "HS256")])
+        request.state.user = payload
+        return payload
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 def _list_archives():
@@ -49,12 +70,12 @@ async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.get("/api/backup/list")
+@app.get("/api/backup/list", dependencies=[Depends(require_auth)])
 async def list_backups():
     return {"archive_dir": settings.ARCHIVE_DIR, "retention_days": settings.ARCHIVE_RETENTION_DAYS, "backups": _list_archives()}
 
 
-@app.post("/api/backup/trigger")
+@app.post("/api/backup/trigger", dependencies=[Depends(require_auth)])
 async def trigger_backup():
     try:
         archiver = DataArchiver()
@@ -64,7 +85,7 @@ async def trigger_backup():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/backup/restore")
+@app.post("/api/backup/restore", dependencies=[Depends(require_auth)])
 async def restore_backup(name: str = Query(..., description="Archive filename in ARCHIVE_DIR"),
                          index: str = Query("chaelsiem-logs-restore", description="Target index")):
     """Restore a .jsonl.gz archive into OpenSearch (bulk index)."""
@@ -76,23 +97,36 @@ async def restore_backup(name: str = Query(..., description="Archive filename in
         archiver = DataArchiver()
         client = archiver.os_client
         actions = []
+        restored = 0
+        sha = hashlib.sha256()
         opener = gzip.open if fp.endswith(".gz") else open
         with opener(fp, "rt", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
+                sha.update(line.encode("utf-8"))
                 try:
                     doc = json.loads(line)
                 except Exception:
                     continue
                 actions.append({"_index": index, "_source": doc})
+                restored += 1
                 if len(actions) >= 500:
                     helpers.bulk(client, actions)
                     actions = []
         if actions:
             helpers.bulk(client, actions)
-        return {"status": "restored", "archive": name, "target_index": index}
+        # Staging verify: count docs now present in target index.
+        verified = None
+        try:
+            resp = client.count(index=index)
+            verified = resp.get("count") if isinstance(resp, dict) else None
+        except Exception:
+            verified = None
+        return {"status": "restored", "archive": name, "target_index": index,
+                "restored_count": restored, "sha256": sha.hexdigest(),
+                "verified_count": verified}
     except HTTPException:
         raise
     except Exception as e:
@@ -100,7 +134,7 @@ async def restore_backup(name: str = Query(..., description="Archive filename in
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/backup/digest/{kind}")
+@app.post("/api/backup/digest/{kind}", dependencies=[Depends(require_auth)])
 async def run_digest_now(kind: str, options: dict = None):
     """Build (and optionally send) a SOC digest now. Body: {"send": true}.
     With send=false (default) returns a preview without touching SMTP."""

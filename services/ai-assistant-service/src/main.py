@@ -203,15 +203,33 @@ def _log_base() -> str:
         "incident-management-service:8082", "log-ingestion-service:8080")
 
 
+_SNAP_CACHE: Dict[str, Any] = {"ts": 0.0, "snap": None}
+_SNAP_TTL_S = 20
+
+
 def _siem_snapshot() -> Dict[str, Any]:
     """Best-effort live SIEM context so chat answers are grounded, not generic.
 
     Never raises — returns {} when telemetry is unreachable. Keeps the prompt
-    small (counts + top open incidents) to bound cost/latency.
+    small (counts + top open incidents) to bound cost/latency. The two reads
+    run in parallel threads and the result is cached ~20s so rapid chat turns
+    don't re-hit OpenSearch/incidents on every message.
     """
+    now = time.time()
+    if _SNAP_CACHE["snap"] and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL_S:
+        return dict(_SNAP_CACHE["snap"])
     snap: Dict[str, Any] = {"taken_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     try:
-        r = _svc_get(f"{_log_base()}/api/logs/stats", timeout=4)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_logs = pool.submit(_svc_get, f"{_log_base()}/api/logs/stats", 4)
+            fut_incs = pool.submit(_svc_get, f"{settings.INCIDENT_SERVICE_URL}/api/incidents/", 4)
+            r_logs, r_incs = fut_logs.result(), fut_incs.result()
+    except Exception as e:
+        logger.debug("SIEM snapshot fetch failed: %s", e)
+        return snap
+    try:
+        r = r_logs
         if r is not None and r.status_code == 200:
             d = r.json() if isinstance(r.json(), dict) else {}
             snap["logs"] = {
@@ -222,7 +240,7 @@ def _siem_snapshot() -> Dict[str, Any]:
     except Exception as e:
         logger.debug("SIEM snapshot logs/stats unreachable: %s", e)
     try:
-        r = _svc_get(f"{settings.INCIDENT_SERVICE_URL}/api/incidents/", timeout=4)
+        r = r_incs
         if r is not None and r.status_code == 200:
             incidents = r.json()
             if isinstance(incidents, list):
@@ -245,6 +263,10 @@ def _siem_snapshot() -> Dict[str, Any]:
                 }
     except Exception as e:
         logger.debug("SIEM snapshot incidents unreachable: %s", e)
+    # Only cache useful snaps — a total outage must not poison rapid retries for 20s.
+    if "logs" in snap or "incidents" in snap:
+        _SNAP_CACHE["ts"] = time.time()
+        _SNAP_CACHE["snap"] = snap
     return snap
 
 

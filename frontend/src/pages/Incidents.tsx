@@ -993,7 +993,7 @@ export function Incidents() {
                       </h3>
                       <div className="flex gap-4 text-sm" style={{ color: '#6b7280' }}>
                         <span className="font-mono">ID: {incident.incident_id.slice(0, 8)}…</span>
-                        <span>{(incident.source_logs?.length ?? 0)} correlation point(s)</span>
+                        <span>{((incident as { log_count?: number }).log_count ?? incident.source_logs?.length ?? 0)} correlation point(s)</span>
                         <span>{new Date(incident.timestamp).toLocaleString()}</span>
                       </div>
 

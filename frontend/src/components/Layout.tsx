@@ -16,13 +16,25 @@ const navItems = [
 
 export function Layout() {
   const { logout } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Start collapsed on narrow screens so content gets the full width.
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => typeof window === 'undefined' || window.innerWidth >= 768,
+  );
   const location = useLocation();
+  const closeSidebar = () => setSidebarOpen(false);
 
   return (
-    <div className="flex h-screen" style={{ background: '#0a0a0a', color: '#d1d5db' }}>
+    <div className="flex h-screen overflow-hidden" style={{ background: '#0a0a0a', color: '#d1d5db' }}>
+      {/* Mobile backdrop: tap outside to dismiss the overlay sidebar */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 md:hidden"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+          onClick={closeSidebar}
+        />
+      )}
       <aside
-        className={`${sidebarOpen ? 'w-64' : 'w-16'} transition-all duration-300 flex flex-col`}
+        className={`${sidebarOpen ? 'flex w-64' : 'hidden md:flex md:w-16'} transition-all duration-300 flex-col shrink-0 fixed md:static z-40 h-screen`}
         style={{ borderRight: '1px solid #333', background: '#111' }}
       >
         <div className="p-4 flex items-center justify-between" style={{ borderBottom: '1px solid #333' }}>
@@ -49,6 +61,7 @@ export function Layout() {
               <Link
                 key={item.path}
                 to={item.path}
+                onClick={() => { if (typeof window !== 'undefined' && window.innerWidth < 768) closeSidebar(); }}
                 className={`flex items-center gap-3 px-4 py-3 ${
                   sidebarOpen ? 'justify-start' : 'justify-center'
                 }`}
@@ -77,8 +90,17 @@ export function Layout() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto" style={{ background: '#0a0a0a' }}>
-        <div className="p-6">
+      <main className="flex-1 min-w-0 overflow-auto" style={{ background: '#0a0a0a' }}>
+        <div className="p-4 md:p-6 max-w-full">
+          {/* Mobile menu button (sidebar is hidden on small screens when closed) */}
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className={`${sidebarOpen ? 'hidden' : ''} md:hidden mb-3 p-2 rounded`}
+            style={{ border: '1px solid #333', color: '#9ca3af', background: 'transparent' }}
+            aria-label="Open menu"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
           <Outlet />
         </div>
       </main>

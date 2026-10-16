@@ -66,6 +66,10 @@ class NotificationConfig:
         elif self.channel == NotificationChannel.SLACK:
             if "webhook_url" not in self.config:
                 raise ValueError("Slack config missing 'webhook_url'")
+        elif self.channel == NotificationChannel.TELEGRAM:
+            missing = [r for r in ("bot_token", "chat_id") if r not in self.config]
+            if missing:
+                raise ValueError(f"Telegram config missing required fields: {missing}")
         return True
 
 

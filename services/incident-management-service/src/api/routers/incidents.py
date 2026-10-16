@@ -36,8 +36,20 @@ async def create_incident(incident: Incident, service: IncidentService = Depends
 
 @router.get("/", response_model=List[Dict[str, Any]])
 async def get_incidents(service: IncidentService = Depends(get_incident_service)):
-    """Fetch incidents through the service layer."""
-    return service.list_active_threats()
+    """Fetch incident summaries through the service layer.
+
+    List payloads stay small as telemetry grows: per-incident source_logs are
+    capped to a 3-log preview (+ log_count), timelines are omitted (use
+    GET /{id}/timeline). Full bodies remain on GET /{id}."""
+    trimmed = []
+    for inc in service.list_active_threats():
+        logs = inc.get("source_logs") or []
+        inc = dict(inc)
+        inc["log_count"] = len(logs)
+        inc["source_logs"] = logs[:3]
+        inc.pop("timeline", None)
+        trimmed.append(inc)
+    return trimmed
 
 @router.post("/{incident_id}/investigate")
 async def investigate_incident(incident_id: str, service: IncidentService = Depends(get_incident_service)):
@@ -436,7 +448,7 @@ async def enrich_ioc(itype: str = "", value: str = ""):
 
 @router.get("/export/compliance")
 async def export_compliance_report(service: IncidentService = Depends(get_incident_service)):
-    """Generate a compliance report mapping incidents to PCI-DSS, HIPAA, SOC2, NIST-800-53."""
+    """Generate a compliance report mapping incidents to PCI-DSS, HIPAA, SOC2, NIST-800-53, ISO27001, CIS."""
     try:
         from compliance.packs import build_compliance_report
         incidents = service.repo.get_all()
@@ -447,14 +459,14 @@ async def export_compliance_report(service: IncidentService = Depends(get_incide
 
 @router.get("/export/compliance/{framework}")
 async def export_compliance_framework(framework: str, service: IncidentService = Depends(get_incident_service)):
-    """Framework-scoped report: /export/compliance/PCI-DSS | HIPAA | SOC2 | NIST-800-53."""
+    """Framework-scoped report: /export/compliance/PCI-DSS | HIPAA | SOC2 | NIST-800-53 | ISO27001 | CIS."""
     try:
         from compliance.packs import build_compliance_report
         incidents = service.repo.get_all()
         report = build_compliance_report(incidents)
         key = framework.upper()
         if key not in report["frameworks"]:
-            raise HTTPException(status_code=404, detail=f"Unknown framework {framework}. Use PCI-DSS, HIPAA, SOC2, NIST-800-53")
+            raise HTTPException(status_code=404, detail=f"Unknown framework {framework}. Use PCI-DSS, HIPAA, SOC2, NIST-800-53, ISO27001, CIS")
         return {"framework": key, "report": report["frameworks"][key], "summary": report["summary"]}
     except HTTPException:
         raise

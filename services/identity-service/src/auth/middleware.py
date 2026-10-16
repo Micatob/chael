@@ -44,6 +44,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:
             token = auth_header.split(" ", 1)[1]
             payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.JWT_ALGORITHM])
+            try:
+                from core.identity.jwt import is_jti_revoked
+                if is_jti_revoked(payload.get("jti", "")):
+                    return JSONResponse(status_code=401, content={"detail": "Session revoked"})
+            except Exception:
+                pass
             request.state.user = payload
             request.state.tenant_id = payload.get("tenant_id", settings.DEFAULT_TENANT_ID)
         except JWTError:

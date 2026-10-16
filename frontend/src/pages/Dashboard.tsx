@@ -163,7 +163,7 @@ const Dashboard: React.FC = () => {
         apiService.getLogs(50),
         apiService.getIncidents(),
         apiService.getAnalyticsOverview(),
-        apiService.getSOARHistory(),
+        apiService.getSOARHistory(20),
         apiService.listAgents(),
         apiService.getLogSources(),
       ]);

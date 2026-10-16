@@ -823,6 +823,7 @@ class SOAREngine:
         return all_playbooks
 
     def _record_playbook_version(self, name: str, actions: List[Dict[str, Any]], created_by: str = "admin") -> int:
+        name = (name or "").upper()
         history = self._playbook_versions.setdefault(name, [])
         version = (history[-1]["version"] + 1) if history else 1
         history.append({
@@ -837,6 +838,7 @@ class SOAREngine:
 
     def create_custom_playbook(self, name: str, actions: List[Dict[str, Any]], created_by: str = "admin") -> bool:
         """Create a custom playbook with the given actions (records v1)."""
+        name = (name or "").upper()
         if name in self.playbooks:
             return False  # Cannot override built-in playbooks
         if name in self._custom_playbooks:
@@ -849,6 +851,7 @@ class SOAREngine:
 
     def update_custom_playbook(self, name: str, actions: List[Dict[str, Any]], created_by: str = "admin") -> bool:
         """Update an existing custom playbook (appends a new version)."""
+        name = (name or "").upper()
         if name in self.playbooks:
             return False  # Cannot modify built-in playbooks
         if name not in self._custom_playbooks:
@@ -861,7 +864,7 @@ class SOAREngine:
 
     def get_playbook_versions(self, name: str) -> List[Dict[str, Any]]:
         """Version history for a custom playbook (oldest → newest)."""
-        return [dict(v) for v in self._playbook_versions.get(name.upper(), [])]
+        return [dict(v) for v in self._playbook_versions.get((name or "").upper(), [])]
 
     def rollback_playbook(self, name: str, version: int, created_by: str = "admin") -> bool:
         """Restore a prior version as a NEW version (history append-only)."""

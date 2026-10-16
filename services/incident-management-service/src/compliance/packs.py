@@ -1,4 +1,4 @@
-"""Compliance framework packs: PCI-DSS 4.0, HIPAA, SOC2, NIST 800-53, MITRE coverage."""
+"""Compliance framework packs: PCI-DSS 4.0, HIPAA, SOC2, NIST 800-53, ISO 27001:2022, CIS v8, MITRE coverage."""
 from typing import Dict, List, Any
 
 FRAMEWORKS: Dict[str, Dict[str, Any]] = {
@@ -39,6 +39,26 @@ FRAMEWORKS: Dict[str, Dict[str, Any]] = {
             "IR-4": {"title": "Incident Handling", "keywords": ["exfiltrat", "persistence", "critical", "malware"]},
         },
     },
+    "ISO27001": {
+        "version": "2022",
+        "controls": {
+            "A.5.15": {"title": "Access control", "keywords": ["login", "auth", "brute force", "4625", "privilege", "4672"]},
+            "A.5.16": {"title": "Identity management", "keywords": ["account created", "4720", "4728", "credential", "password"]},
+            "A.8.15": {"title": "Logging", "keywords": ["log cleared", "1102", "audit policy", "4719", "audit"]},
+            "A.8.16": {"title": "Monitoring activities", "keywords": ["scan", "nmap", "anomaly", "critical", "powershell"]},
+            "A.5.24": {"title": "Incident management planning", "keywords": ["malware", "ransomware", "exfiltrat", "persistence", "critical"]},
+        },
+    },
+    "CIS": {
+        "version": "v8",
+        "controls": {
+            "CIS-3": {"title": "Data protection (logs)", "keywords": ["log cleared", "1102", "exfiltrat", "audit"]},
+            "CIS-5": {"title": "Account management", "keywords": ["account created", "4720", "4740", "privilege", "4672"]},
+            "CIS-6": {"title": "Access control management", "keywords": ["brute force", "login", "auth", "rdp", "ssh"]},
+            "CIS-8": {"title": "Audit log management", "keywords": ["audit", "4719", "critical", "powershell"]},
+            "CIS-10": {"title": "Malware defenses", "keywords": ["malware", "yara", "mimikatz", "ransomware", "cobalt"]},
+        },
+    },
 }
 
 
@@ -54,8 +74,15 @@ def map_incident_to_frameworks(incident: Dict[str, Any]) -> Dict[str, List[str]]
             if any(kw.lower() in blob for kw in ctrl["keywords"]):
                 hits.append(ctrl_id)
         # critical incidents always flag monitoring controls
-        if (incident.get("risk_score") or 0) >= 90 and fw in ("SOC2", "NIST-800-53") and not hits:
-            hits.append("CC7.2" if fw == "SOC2" else "IR-4")
+        if (incident.get("risk_score") or 0) >= 90 and not hits:
+            if fw == "SOC2":
+                hits.append("CC7.2")
+            elif fw == "NIST-800-53":
+                hits.append("IR-4")
+            elif fw == "ISO27001":
+                hits.append("A.5.24")
+            elif fw == "CIS":
+                hits.append("CIS-8")
         if hits:
             out[fw] = hits
     return out
@@ -69,12 +96,19 @@ def build_compliance_report(incidents: List[Dict[str, Any]]) -> Dict[str, Any]:
             frameworks[fw]["controls"][ctrl_id] = {"title": ctrl["title"], "violations": []}
     for inc in incidents:
         mapping = map_incident_to_frameworks(inc)
+        logs = inc.get("source_logs") or []
+        artifacts = inc.get("artifacts") or {}
         entry = {
             "incident_id": inc.get("incident_id"),
             "timestamp": inc.get("timestamp"),
             "severity": "HIGH" if (inc.get("risk_score") or 0) >= 70 else "MEDIUM" if (inc.get("risk_score") or 0) >= 40 else "LOW",
             "description": inc.get("description"),
             "status": inc.get("status"),
+            "evidence": {
+                "log_count": inc.get("log_count", len(logs)),
+                "artifact_keys": sorted(str(k) for k in artifacts.keys())[:12],
+                "risk_score": inc.get("risk_score"),
+            },
         }
         for fw, ctrls in mapping.items():
             for c in ctrls:
