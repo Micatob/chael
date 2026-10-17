@@ -113,6 +113,7 @@ const Dashboard: React.FC = () => {
   const [agents, setAgents] = useState<Array<{ agent_id: string; hostname: string; last_seen: string; online: boolean }>>([]);
   const [sources, setSources] = useState<Array<{ hostname: string; status: string; timestamp: string }>>([]);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const searchLower = searchTerm.toLowerCase();
@@ -397,18 +398,27 @@ const Dashboard: React.FC = () => {
           </button>
           <button
             onClick={async () => {
-              if (!window.confirm('Purge ALL telemetry data? Incidents under legal hold are protected and will block the purge. This cannot be undone.')) return;
+              if (!window.confirm('Purge ALL telemetry data? Logs are always purged. Incidents under legal hold are kept and will block only the incident purge (SOAR audit history is preserved by design). This cannot be undone.')) return;
+              setPurgeError(null);
               try {
                 await apiService.purgeAllData();
                 setLogs([]);
                 setIncidents([]);
                 setAnalyticsOverview(null);
-                setSoarHistory([]);
+                // NOTE: SOAR history lives in the tamper-evident audit index and
+                // is intentionally never purged — do not clear it locally.
                 setGuidanceItems([]);
                 setDataLoaded(false);
                 fetchAll();
-              } catch (e) {
-                console.error('Purge failed', e);
+              } catch (e: any) {
+                const detail = e?.response?.data?.detail;
+                const msg = typeof detail === 'string' ? detail
+                  : detail?.message || 'Purge failed';
+                const holds = (typeof detail === 'object' && detail?.hold_count)
+                  ? ` (${detail.hold_count} incident(s) on legal hold kept — telemetry was still purged; release holds on the Incidents page to clear them).`
+                  : '';
+                setPurgeError(msg + holds);
+                fetchAll();
               }
             }}
             className="text-xs px-3 py-1.5 rounded"
@@ -422,6 +432,13 @@ const Dashboard: React.FC = () => {
           </button>
         </div>
       </header>
+
+      {purgeError && (
+        <div className="mx-6 mt-4 p-3 rounded text-sm" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid #7f1d1d', color: '#fca5a5' }}>
+          {purgeError}
+          <button onClick={() => setPurgeError(null)} className="ml-3 underline">Dismiss</button>
+        </div>
+      )}
 
       <main className="p-6 space-y-6">
 

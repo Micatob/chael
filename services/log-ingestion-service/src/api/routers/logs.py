@@ -511,9 +511,13 @@ async def purge_all_data(
 ):
     """Delete telemetry. Safety rules (evidence protection):
     - requires ?confirm=true
+    - telemetry indices are ALWAYS purged (so the button never looks dead)
     - incident docs only with ?include_incidents=true, and NEVER when any
-      incident is under legal hold (check GET /api/incidents/holds/active first)
-    - tamper-evident audit index (chaelsiem-audit-logs) is never purged here."""
+      incident is under legal hold (check GET /api/incidents/holds/active first).
+      When holds block incidents the telemetry purge still stands and the
+      response is 409 with {purged, holds} so the UI can name the blockers.
+    - tamper-evident audit index (chaelsiem-audit-logs) is never purged here
+      (SOAR history is preserved by design)."""
     if not confirm:
         raise HTTPException(status_code=400, detail="Purge requires ?confirm=true")
     indices = [
@@ -521,6 +525,16 @@ async def purge_all_data(
         opensearch.yara_index,
         "chaelsiem-source-heartbeats",
     ]
+    deleted = {}
+    for idx in indices:
+        try:
+            if opensearch.client.indices.exists(index=idx):
+                resp = opensearch.client.delete_by_query(
+                    index=idx, body={"query": {"match_all": {}}}, refresh=True)
+                deleted[idx] = (resp or {}).get("deleted", 0) if isinstance(resp, dict) else 0
+                logger.info("Purged index: %s", idx)
+        except Exception as e:
+            logger.warning("Failed to purge %s: %s", idx, e)
     if include_incidents:
         incidents = []
         try:
@@ -533,20 +547,20 @@ async def purge_all_data(
         except Exception:
             pass
         if incidents:
+            hold_ids = [h.get("_source", {}).get("incident_id", "?") for h in incidents[:10]]
             raise HTTPException(
                 status_code=409,
-                detail=f"Refused: {len(incidents)} incident(s) under legal hold. Release holds first.",
+                detail={"message": f"Telemetry purged, but {len(incidents)} incident(s) under legal hold were kept. Release holds first.",
+                        "purged": deleted, "holds": hold_ids, "hold_count": len(incidents)},
             )
-        indices.append(opensearch.incident_index)
-    deleted = []
-    for idx in indices:
         try:
-            if opensearch.client.indices.exists(index=idx):
-                opensearch.client.delete_by_query(index=idx, body={"query": {"match_all": {}}})
-                deleted.append(idx)
-                logger.info("Purged index: %s", idx)
+            if opensearch.client.indices.exists(index=opensearch.incident_index):
+                resp = opensearch.client.delete_by_query(
+                    index=opensearch.incident_index, body={"query": {"match_all": {}}}, refresh=True)
+                deleted[opensearch.incident_index] = (resp or {}).get("deleted", 0) if isinstance(resp, dict) else 0
+                logger.info("Purged index: %s", opensearch.incident_index)
         except Exception as e:
-            logger.warning("Failed to purge %s: %s", idx, e)
-    return {"status": "purged", "indices": deleted}
+            logger.warning("Failed to purge %s: %s", opensearch.incident_index, e)
+    return {"status": "purged", "indices": sorted(deleted.keys()), "deleted": deleted}
 
 

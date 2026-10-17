@@ -5,6 +5,8 @@ services:
       context: ./services/gateway
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
     ports:
       - "8001:8000"
       - "8443:8443"
@@ -30,6 +32,8 @@ services:
       context: ./services/identity-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
     ports:
       - "8004:8004"
     environment:
@@ -53,6 +57,8 @@ services:
       context: ./services/log-ingestion-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
     ports:
       - "8080:8080"
     environment:
@@ -72,6 +78,8 @@ services:
       context: ./services/correlation-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.75
     environment:
       - API_PORT=8081
       - OPENSEARCH_HOST=opensearch
@@ -89,6 +97,8 @@ services:
       context: ./services/incident-management-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
     environment:
       - API_PORT=8082
       - OPENSEARCH_HOST=opensearch
@@ -114,6 +124,8 @@ services:
       context: ./services/soar-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -138,6 +150,8 @@ services:
       context: ./services/ml-analytics-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     environment:
       - API_PORT=8084
       - OPENSEARCH_HOST=opensearch
@@ -157,6 +171,8 @@ services:
       context: ./services/threat-feed
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
     environment:
       - API_PORT=8090
       - OPENSEARCH_HOST=opensearch
@@ -174,6 +190,8 @@ services:
       context: ./services/flow-collector
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
     ports:
       - "2055:2055/udp"
     environment:
@@ -192,6 +210,8 @@ services:
       context: ./services/sigma-converter
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
     environment:
       - API_PORT=8091
       - OPENSEARCH_HOST=opensearch
@@ -208,6 +228,8 @@ services:
       context: ./services/data-archiver
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
     environment:
       - OPENSEARCH_HOST=opensearch
       - ARCHIVE_RETENTION_DAYS=30
@@ -238,6 +260,8 @@ services:
       context: ./services/ai-assistant-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
     environment:
       - API_PORT=8093
       - OPENSEARCH_HOST=opensearch
@@ -275,6 +299,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    mem_limit: 128m
+    cpus: 0.25
     ports:
       - "3000:80"
     networks:
@@ -286,10 +312,12 @@ services:
     image: opensearchproject/opensearch:2.12.0
     container_name: chaelsiem-opensearch
     restart: unless-stopped
+    mem_limit: 1536m
+    cpus: 1.0
     environment:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
-      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD}
       - cluster.name=chaelsiem-cluster
       - node.name=opensearch
@@ -312,6 +340,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
     ports:
       - "6379:6379"
     volumes:
@@ -329,6 +359,8 @@ services:
     image: prom/prometheus:v2.52.0
     container_name: chaelsiem-prometheus
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
     ports:
       - "9090:9090"
     volumes:

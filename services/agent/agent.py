@@ -689,10 +689,15 @@ def _heartbeat_sender(siem_url: str, interval: int = 60, agent_version: str = ""
             },
         }
         headers = _get_auth_header()
+        # Fast return: any failed heartbeat shortens this cycle to 10s so the
+        # agent shows ONLINE within seconds of the SIEM coming back (instead
+        # of up to a full 60s interval). Steady-state stays at `interval`.
+        cycle_failed = False
         try:
             session.post(log_heartbeat_url, json=payload, headers=headers, timeout=10)
         except Exception as e:
             log.debug("Log heartbeat failed: %s", e)
+            cycle_failed = True
         # Adopt fresh creds if another thread re-registered (purge/revoke self-heal).
         shared_id, shared_key, _ = _get_active_credentials()
         if shared_id and (shared_id != cur_id or shared_key != cur_key):
@@ -708,6 +713,8 @@ def _heartbeat_sender(siem_url: str, interval: int = 60, agent_version: str = ""
                     if healed:
                         cur_id, cur_key, _ = healed
                         auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/heartbeat"
+                    else:
+                        cycle_failed = True
                 elif r.status_code == 401:
                     log.info("Heartbeat auth expired, refreshing token...")
                     token = _authenticate(siem_url, cur_id, cur_key)
@@ -720,9 +727,12 @@ def _heartbeat_sender(siem_url: str, interval: int = 60, agent_version: str = ""
                     if healed:
                         cur_id, cur_key, _ = healed
                         auth_heartbeat_url = f"{siem_url.rstrip('/')}/api/auth/agent/{cur_id}/heartbeat"
+                    else:
+                        cycle_failed = True
             except Exception as e:
                 log.debug("Auth heartbeat failed: %s", e)
-        STOP.wait(interval)
+                cycle_failed = True
+        STOP.wait(10 if cycle_failed else interval)
 
 
 # ── Reconnection Loop ────────────────────────────────────────────────────
@@ -800,11 +810,14 @@ def _forwarder(siem_url: str, batch_size: int = 50, agent_id: str = "", agent_ke
             except requests.RequestException as e:
                 log.debug("Ingest unreachable (%s) — requeueing %d unsent, backing off %ds",
                           e, len(batch) - idx, retry_interval)
+                dropped = 0
                 for pending in batch[idx:]:
                     try:
                         QUEUE.put_nowait(pending)
                     except Exception:
-                        break
+                        dropped += 1
+                if dropped:
+                    log.warning("Queue full — dropped %d oldest unsent logs", dropped)
                 STOP.wait(retry_interval)
                 break
             if r.status_code == 202:
@@ -831,21 +844,27 @@ def _forwarder(siem_url: str, batch_size: int = 50, agent_id: str = "", agent_ke
                         continue
                 log.warning("Re-auth failed — requeueing %d unsent, backing off %ds",
                             len(batch) - idx, retry_interval)
+                dropped = 0
                 for pending in batch[idx:]:
                     try:
                         QUEUE.put_nowait(pending)
                     except Exception:
-                        break
+                        dropped += 1
+                if dropped:
+                    log.warning("Queue full — dropped %d oldest unsent logs", dropped)
                 STOP.wait(retry_interval)
                 break
             if 500 <= r.status_code < 600:
                 log.warning("Ingest HTTP %s — requeueing %d unsent, backing off %ds",
                             r.status_code, len(batch) - idx, retry_interval)
+                dropped = 0
                 for pending in batch[idx:]:
                     try:
                         QUEUE.put_nowait(pending)
                     except Exception:
-                        break
+                        dropped += 1
+                if dropped:
+                    log.warning("Queue full — dropped %d oldest unsent logs", dropped)
                 STOP.wait(retry_interval)
                 break
             log.warning("Dropping malformed entry (HTTP %s): %s", r.status_code, r.text[:100])
